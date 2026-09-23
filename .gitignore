@@ -1,0 +1,37 @@
+# Ambientes virtuais
+.venv/
+.venv_conda_backup/
+.conda/
+
+# Artefatos de build (PyInstaller)
+build/
+dist/
+
+# Cache/bytecode Python
+__pycache__/
+*.pyc
+
+# Configuração pessoal do editor
+.vscode/
+
+# ---------------------------------------------------------------------------
+# Dados e saídas locais (não fazem parte do projeto)
+# ---------------------------------------------------------------------------
+# Regra geral: ignora todos os .xlsx e depois libera apenas os necessários
+# para a suíte de testes.
+*.xlsx
+!Testes.xlsx
+!Testes_tratado.xlsx
+
+# Saídas geradas pelo processamento (mesmo que casassem com as exceções acima)
+*_telefones.xlsx
+*_estendido.xlsx
+Testes_telefones.xlsx
+teste_saida.xlsx
+
+# Exports reais de CRM e materiais de teste local
+Meus Clientes*.xlsx
+Meus%20Clientes*.xlsx
+
+# Arquivo local sem extensão
+limpeza e conversão de números
