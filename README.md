@@ -282,6 +282,63 @@ genérico de telefone, erro amigável sem telefone, consolidação e deduplicaç
 global entre arquivos e formatos, e a saída estendida. Os testes da V1
 permanecem como referência de regressão e não devem ser removidos.
 
+## Exportação para o Blip (V3)
+
+A V3 adiciona a modalidade **"Blip — lista de contatos"**, que prepara arquivos
+CSV prontos para upload no Blip, com um Excel intermediário para conferência e
+edição manual. Os fluxos e as saídas anteriores permanecem inalterados.
+
+### Requisitos do CSV do Blip
+
+Cada CSV gerado respeita:
+
+- Exatamente duas colunas, nesta ordem: `Número ou BSUID` e `Nome`.
+- Uma linha por contato, sem índice do pandas nem colunas extras.
+- No máximo **100 contatos** por arquivo (sem contar o cabeçalho).
+- No máximo **100 KB** de tamanho real do arquivo gravado.
+- Identificador no formato de telefone internacional com `+` (ex.: `+5548999990001`)
+  ou um BSUID válido (aceito na reimportação, quando o usuário fornecer).
+- Codificação **UTF-8** (sem BOM) e separador vírgula, preservando acentos,
+  vírgulas, aspas e o `+` inicial.
+
+Os arquivos são nomeados sequencialmente: `Blip_001.csv`, `Blip_002.csv`, etc.
+Cada CSV é revalidado após a gravação, medindo os bytes reais e reabrindo o
+conteúdo. Nenhum arquivo existente é sobrescrito silenciosamente: se a pasta de
+saída já contiver `Blip_*.csv`, o aplicativo avisa.
+
+### Fluxo em duas etapas
+
+1. **Preparação.** Selecione as planilhas (CRM 1, CRM 2 ou genéricas, até 7),
+   escolha a saída "Blip — lista de contatos" e clique em processar. O
+   aplicativo reaproveita a consolidação, a deduplicação global e a
+   normalização de telefones da V2, mapeia o resultado para as duas colunas do
+   Blip, divide em lotes (respeitando 100 contatos **e** 100 KB) e gera:
+   - os CSVs iniciais (`Blip_001.csv`...);
+   - um Excel de conferência `Blip_Contatos_Revisao.xlsx`, com uma aba por lote
+     (`Lote_001`, `Lote_002`...), telefones como texto (preservando o `+` e sem
+     notação científica), cabeçalho e autofiltro.
+
+2. **Geração final após a revisão.** Edite o Excel livremente (inserir, remover,
+   mover ou corrigir contatos) e use **"Gerar CSVs a partir da planilha
+   revisada"**. O aplicativo lê as abas, valida as duas colunas e os
+   identificadores, **reaplica os limites de 100 contatos e 100 KB** —
+   redistribuindo automaticamente mesmo que uma aba tenha passado de 100
+   contatos — e grava os CSVs definitivos na pasta escolhida. O Excel revisado
+   não é modificado.
+
+### Regras de validação
+
+- O identificador (telefone) é obrigatório. Registros sem identificador válido
+  não são descartados em silêncio: aparecem no resumo como inválidos.
+- O nome pode faltar; nesse caso o contato é mantido com nome vazio (o
+  aplicativo não inventa nomes) e é contabilizado no resumo.
+- Se um único contato não couber em 100 KB nem sozinho, ele não é truncado: é
+  reportado como inválido.
+
+O resumo apresentado ao final informa contatos exportados, número de arquivos
+gerados e eventuais registros inválidos. O processamento roda fora da thread da
+interface e cliques repetidos não iniciam execuções simultâneas.
+
 ## Histórico de versões
 
 - **V1 — concluída:** processamento inicial.
@@ -292,3 +349,6 @@ permanecem como referência de regressão e não devem ser removidos.
   segundo CRM e a planilhas genéricas por telefone, consolidação com
   deduplicação global, nova saída "Planilha completa estendida" e ícone próprio
   do executável. O fluxo clássico da V1 permanece inalterado.
+- **V3 (Blip) — concluída:** modalidade "Blip — lista de contatos" com geração
+  de CSVs (até 100 contatos / 100 KB), Excel de conferência por lote e geração
+  dos CSVs definitivos a partir do Excel revisado. Fluxos V1/V2 inalterados.

@@ -29,6 +29,15 @@ from pipeline_v2 import (
     LimiteArquivosExcedidoError,
     gerar_saidas_v2,
 )
+import blip
+from blip import (
+    FORMATO_BLIP,
+    MAX_BYTES_POR_ARQUIVO,
+    MAX_CONTATOS_POR_ARQUIVO,
+    BlipError,
+    gerar_blip_de_planilhas,
+    gerar_csvs_do_excel_revisado,
+)
 
 
 MENSAGEM_ARQUIVO_INCOMPATIVEL = (
@@ -43,6 +52,11 @@ MENSAGEM_SEM_TELEFONE = (
 MENSAGEM_LIMITE_ARQUIVOS = (
     f"Selecione no máximo {LIMITE_ARQUIVOS} arquivos por vez. "
     "Ajuste a seleção e tente novamente."
+)
+NOTA_BLIP = (
+    f"Blip: até {MAX_CONTATOS_POR_ARQUIVO} contatos e "
+    f"{MAX_BYTES_POR_ARQUIVO // 1024} KB por CSV. "
+    "São gerados os CSVs e um Excel de revisão para edição manual."
 )
 PASTA_RECURSOS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 CAMINHO_LOGOMARCA = PASTA_RECURSOS / "assets" / "marca-SESI-SENAI_reduzida_cor.png"
@@ -99,8 +113,8 @@ class ConversorPlanilhasApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Conversor CRM")
-        self.geometry("720x720")
-        self.minsize(720, 700)
+        self.geometry("720x860")
+        self.minsize(720, 820)
         self.caminhos_entrada: list[Path] = []
         self.pasta_saida: Path | None = None
         self.processando = False
@@ -111,6 +125,7 @@ class ConversorPlanilhasApp(ctk.CTk):
         self._criar_cabecalho()
         self._criar_area_planilha()
         self._criar_area_formato()
+        self._criar_area_revisao_blip()
         self._criar_area_resultado()
 
     def _criar_cabecalho(self) -> None:
@@ -167,6 +182,10 @@ class ConversorPlanilhasApp(ctk.CTk):
                 FORMATO_PLANILHA_ESTENDIDA,
                 "Planilha completa + Regional/Unidade e Nome do Produto.",
             ),
+            (
+                FORMATO_BLIP,
+                "Gera CSVs (até 100 contatos / 100 KB) + Excel de revisão.",
+            ),
         )
         for indice, (formato, descricao) in enumerate(opcoes):
             coluna = indice % 2
@@ -207,8 +226,35 @@ class ConversorPlanilhasApp(ctk.CTk):
         )
         self.botao_processar.grid(row=5, column=0, pady=(0, 13))
 
+    def _criar_area_revisao_blip(self) -> None:
+        area = self._nova_secao("BLIP — GERAR CSVs DA PLANILHA REVISADA", 6)
+        ctk.CTkLabel(
+            area,
+            text=(
+                "Depois de revisar o Excel de contatos, gere os CSVs definitivos. "
+                "Os limites de 100 contatos e 100 KB são reaplicados."
+            ),
+            text_color=TEXTO_SECUNDARIO,
+            justify="left",
+            wraplength=560,
+            font=ctk.CTkFont(size=12),
+        ).grid(row=1, column=0, padx=18, pady=(0, 10))
+        self.botao_revisar = ctk.CTkButton(
+            area,
+            text="GERAR CSVs A PARTIR DA PLANILHA REVISADA",
+            command=self.gerar_csvs_revisados,
+            width=320,
+            fg_color="transparent",
+            border_width=1,
+            border_color=AZUL_PRINCIPAL,
+            text_color=(AZUL_DESTAQUE, "#54B7ED"),
+            hover_color=("#D9EAF5", "#253B49"),
+            font=ctk.CTkFont(weight="bold"),
+        )
+        self.botao_revisar.grid(row=2, column=0, padx=18, pady=(0, 14))
+
     def _criar_area_resultado(self) -> None:
-        area = self._nova_secao("RESULTADO", 6)
+        area = self._nova_secao("RESULTADO", 7)
         nomes = (
             ("Registros lidos", "registros_lidos"),
             ("Sem telefone", "removidos_sem_telefone"),
@@ -251,7 +297,7 @@ class ConversorPlanilhasApp(ctk.CTk):
         )
         self.botao_abrir_pasta.grid(row=3, column=0, pady=(0, 14))
         self.status = ctk.CTkLabel(self, text="", text_color=TEXTO_SECUNDARIO, wraplength=600)
-        self.status.grid(row=7, column=0, pady=(0, 15))
+        self.status.grid(row=8, column=0, pady=(0, 15))
 
     def _nova_secao(self, titulo: str, linha: int) -> ctk.CTkFrame:
         """Cria um painel visual discreto para agrupar uma etapa do fluxo."""
@@ -300,60 +346,96 @@ class ConversorPlanilhasApp(ctk.CTk):
         """Inicia o worker e impede processamento duplicado."""
         if not self.caminhos_entrada or self.processando:
             return
-        self.processando = True
-        self.botao_processar.configure(state="disabled", text="PROCESSANDO...")
-        self.botao_selecionar.configure(state="disabled")
-        for botao in self.botoes_formato:
-            botao.configure(state="disabled")
-        self.botao_abrir_pasta.configure(state="disabled")
+        formato = self.formato_saida.get()
+
+        # No modo Blip, a pasta de saída é escolhida pelo usuário (na thread
+        # principal) antes de iniciar o processamento pesado.
+        pasta_blip: Path | None = None
+        if formato == FORMATO_BLIP:
+            escolha = filedialog.askdirectory(
+                title="Escolha a pasta de saída para os arquivos do Blip"
+            )
+            if not escolha:
+                return
+            pasta_blip = Path(escolha)
+
+        self._bloquear_interface("PROCESSANDO...")
         self.status.configure(text="Processando suas planilhas...")
         Thread(
             target=self._executar_processamento,
-            args=(list(self.caminhos_entrada), self.formato_saida.get()),
+            args=(list(self.caminhos_entrada), formato, pasta_blip),
             daemon=True,
         ).start()
 
-    def _executar_processamento(self, caminhos: list[Path], formato: str) -> None:
+    def _bloquear_interface(self, texto_processar: str) -> None:
+        """Desabilita controles para impedir processamentos simultâneos."""
+        self.processando = True
+        self.botao_processar.configure(state="disabled", text=texto_processar)
+        self.botao_selecionar.configure(state="disabled")
+        self.botao_revisar.configure(state="disabled")
+        for botao in self.botoes_formato:
+            botao.configure(state="disabled")
+        self.botao_abrir_pasta.configure(state="disabled")
+
+    def _executar_processamento(
+        self, caminhos: list[Path], formato: str, pasta_blip: Path | None
+    ) -> None:
         """Executa leitura, validação e geração fora da thread da interface.
 
         Roteamento: um único arquivo CRM 1 com formato clássico usa o pipeline
-        V1 intacto. Qualquer outro caso (múltiplos arquivos, CRM 2, genérico ou
-        saída estendida) usa o pipeline V2/canônico.
+        V1 intacto. O modo Blip usa o pipeline V2 + preparação Blip. Os demais
+        casos usam o pipeline V2/canônico.
         """
         try:
-            usa_v1 = (
-                len(caminhos) == 1
-                and formato in FORMATOS_CLASSICOS
-                and _e_crm1(caminhos[0])
-            )
-            if usa_v1:
-                _validar_estrutura_crm(caminhos[0])
-                resultado = gerar_saidas(caminhos[0], formato)
+            if formato == FORMATO_BLIP:
+                assert pasta_blip is not None
+                resultado = gerar_blip_de_planilhas(caminhos, pasta_blip)
             else:
-                resultado = gerar_saidas_v2(caminhos, formato)
+                usa_v1 = (
+                    len(caminhos) == 1
+                    and formato in FORMATOS_CLASSICOS
+                    and _e_crm1(caminhos[0])
+                )
+                if usa_v1:
+                    _validar_estrutura_crm(caminhos[0])
+                    resultado = gerar_saidas(caminhos[0], formato)
+                else:
+                    resultado = gerar_saidas_v2(caminhos, formato)
         except Exception as erro:
             self.after(0, self._concluir_processamento, None, erro)
         else:
             self.after(0, self._concluir_processamento, resultado, None)
 
-    def _concluir_processamento(
-        self, resultado: dict[str, object] | None, erro: Exception | None
-    ) -> None:
-        """Atualiza widgets somente na thread principal após o worker terminar."""
+    def _reabilitar_interface(self) -> None:
+        """Reabilita os controles após o término do worker."""
         self.processando = False
         self.botao_selecionar.configure(state="normal")
         self.botao_processar.configure(
             state="normal" if self.caminhos_entrada else "disabled",
             text="PROCESSAR PLANILHA",
         )
+        self.botao_revisar.configure(state="normal")
         for botao in self.botoes_formato:
             botao.configure(state="normal")
+
+    def _concluir_processamento(
+        self, resultado: dict[str, object] | None, erro: Exception | None
+    ) -> None:
+        """Atualiza widgets somente na thread principal após o worker terminar."""
+        self._reabilitar_interface()
         if erro is not None:
             mensagem = self._mensagem_amigavel(erro)
             self.status.configure(text=mensagem)
             messagebox.showerror("Não foi possível processar", mensagem, parent=self)
             return
         assert resultado is not None
+        if "lotes" in resultado:  # resultado do modo Blip
+            self._mostrar_resultado_blip(resultado)
+        else:
+            self._mostrar_resultado_padrao(resultado)
+
+    def _mostrar_resultado_padrao(self, resultado: dict[str, object]) -> None:
+        """Exibe métricas e arquivos das saídas clássicas/estendida."""
         for chave, valor in self.valores_metricas.items():
             valor.configure(text=str(resultado[chave]))
         arquivos = [Path(arquivo) for arquivo in resultado["arquivos_gerados"]]  # type: ignore[index]
@@ -364,12 +446,80 @@ class ConversorPlanilhasApp(ctk.CTk):
         self.botao_abrir_pasta.configure(state="normal")
         self.status.configure(text="Processamento concluído.")
 
+    def _mostrar_resultado_blip(self, resumo: dict[str, object]) -> None:
+        """Exibe o resumo do modo Blip (lotes, contatos, inválidos)."""
+        metricas = resumo.get("metricas_processamento", {})
+        if isinstance(metricas, dict):
+            for chave, valor in self.valores_metricas.items():
+                self.valores_metricas[chave].configure(text=str(metricas.get(chave, "—")))
+
+        arquivos = [Path(a) for a in resumo["arquivos_gerados"]]  # type: ignore[index]
+        excel = resumo.get("excel_revisao")
+        linhas = [
+            f"Contatos exportados: {resumo['contatos_exportados']}",
+            f"Lotes/CSVs gerados: {resumo['lotes']}",
+        ]
+        if resumo.get("contatos_sem_nome"):
+            linhas.append(f"Contatos sem nome (mantidos): {resumo['contatos_sem_nome']}")
+        if resumo.get("total_invalidos"):
+            linhas.append(f"Registros inválidos (não exportados): {resumo['total_invalidos']}")
+        if excel is not None:
+            linhas.append(f"Excel de revisão: {Path(excel).name}")
+        if arquivos:
+            exemplos = ", ".join(a.name for a in arquivos[:3])
+            reticencias = "..." if len(arquivos) > 3 else ""
+            linhas.append(f"CSVs: {exemplos}{reticencias}")
+
+        self.arquivos_gerados.configure(text="\n".join(linhas))
+        if arquivos:
+            self.pasta_saida = arquivos[0].parent
+        elif excel is not None:
+            self.pasta_saida = Path(excel).parent
+        if self.pasta_saida is not None:
+            self.botao_abrir_pasta.configure(state="normal")
+        self.status.configure(text="Preparação Blip concluída. Revise o Excel antes do upload.")
+
+    def gerar_csvs_revisados(self) -> None:
+        """Gera os CSVs definitivos a partir de um Excel de revisão editado."""
+        if self.processando:
+            return
+        caminho_excel = filedialog.askopenfilename(
+            title="Selecionar o Excel revisado do Blip",
+            filetypes=[("Planilhas Excel", "*.xlsx")],
+        )
+        if not caminho_excel:
+            return
+        escolha_pasta = filedialog.askdirectory(
+            title="Escolha a pasta de saída para os CSVs definitivos"
+        )
+        if not escolha_pasta:
+            return
+
+        self._bloquear_interface("GERANDO CSVs...")
+        self.status.configure(text="Gerando CSVs a partir da planilha revisada...")
+        Thread(
+            target=self._executar_revisao,
+            args=(Path(caminho_excel), Path(escolha_pasta)),
+            daemon=True,
+        ).start()
+
+    def _executar_revisao(self, caminho_excel: Path, pasta_saida: Path) -> None:
+        """Gera os CSVs definitivos fora da thread da interface."""
+        try:
+            resumo = gerar_csvs_do_excel_revisado(caminho_excel, pasta_saida)
+        except Exception as erro:
+            self.after(0, self._concluir_processamento, None, erro)
+        else:
+            self.after(0, self._concluir_processamento, resumo, None)
+
     @staticmethod
     def _mensagem_amigavel(erro: Exception) -> str:
         if isinstance(erro, LimiteArquivosExcedidoError):
             return MENSAGEM_LIMITE_ARQUIVOS
         if isinstance(erro, FormatoDesconhecidoError):
             return MENSAGEM_SEM_TELEFONE
+        if isinstance(erro, BlipError):
+            return str(erro)
         if isinstance(erro, PermissionError):
             return "Não foi possível salvar o arquivo. Feche-o no Excel e tente novamente."
         if isinstance(erro, FileNotFoundError):

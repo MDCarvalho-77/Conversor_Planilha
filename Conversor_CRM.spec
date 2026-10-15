@@ -30,6 +30,7 @@ a = Analysis(
         "processamento",
         "adapters",
         "pipeline_v2",
+        "blip",
     ],
     hookspath=[],
     hooksconfig={},
