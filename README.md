@@ -339,6 +339,125 @@ O resumo apresentado ao final informa contatos exportados, número de arquivos
 gerados e eventuais registros inválidos. O processamento roda fora da thread da
 interface e cliques repetidos não iniciam execuções simultâneas.
 
+## Separação automática por DDD (V3.1)
+
+A V3.1 é uma evolução incremental (não é uma V4): tudo o que já funcionava na
+V1, V2 e V3 permanece intacto. O foco é atender à operação comercial, que
+trabalha com três números de WhatsApp associados aos DDDs **47**, **48** e
+**49**. Após a consolidação e a deduplicação global, os contatos preparados para
+o Blip são classificados automaticamente em **quatro grupos**.
+
+### Os quatro grupos
+
+1. **DDD_47** — somente contatos cujo telefone brasileiro tenha DDD 47.
+2. **DDD_49** — somente contatos cujo telefone brasileiro tenha DDD 49.
+3. **DDD_48_E_OUTROS** — contatos com DDD 48 e todos os demais DDDs brasileiros
+   válidos diferentes de 47 e 49.
+4. **SEM_DDD** — contatos que não podem ser classificados com segurança: BSUID,
+   telefones internacionais que não sejam brasileiros e telefones sem DDD
+   brasileiro identificável.
+
+Cada contato cai em **exatamente um** grupo, e nenhum contato é descartado.
+
+### Regra conservadora de classificação
+
+A classificação usa o telefone **já normalizado** pela lógica existente (a mesma
+regra de telefone da V1/V2) e não inventa nem infere DDD por nome, origem da
+planilha ou qualquer outro campo:
+
+- Um telefone é reconhecido como brasileiro somente quando os dígitos começam
+  com `55` **e** o total é de **12 dígitos** (`55` + DDD de 2 + número de 8) ou
+  **13 dígitos** (`55` + DDD de 2 + número de 9). O DDD são os dois dígitos logo
+  após o `55`, válido na faixa 11–99.
+- Qualquer outra forma vai para **SEM_DDD**: BSUID e identificadores com letras,
+  telefones internacionais não brasileiros (ex.: `+1...`, `+351...`, `+44...`) e
+  `+55` com comprimento incompatível (que não permita inferir o DDD com
+  segurança).
+- Os dois primeiros dígitos de um telefone internacional **não** são confundidos
+  com DDD brasileiro.
+
+### Estrutura de pastas Blip/DDD_x/
+
+A exportação Blip da V3.1 organiza os arquivos por grupo dentro de uma pasta
+`Blip/`:
+
+```text
+Blip/
+    DDD_47/
+        Blip_001.csv
+        Blip_Contatos_Revisao.xlsx
+    DDD_49/
+        Blip_001.csv
+        Blip_Contatos_Revisao.xlsx
+    DDD_48_E_OUTROS/
+        Blip_001.csv
+        Blip_Contatos_Revisao.xlsx
+    SEM_DDD/
+        Blip_001.csv
+        Blip_Contatos_Revisao.xlsx
+```
+
+Regras da estrutura:
+
+- A subpasta de um grupo é criada **somente** quando o grupo tem contatos; um
+  grupo vazio não gera pasta.
+- A numeração dos CSVs é **independente por grupo**: cada grupo recomeça em
+  `Blip_001.csv` e segue sequencialmente (`Blip_002.csv`...) quando há mais de um
+  lote.
+- Cada grupo tem a sua **própria** planilha de revisão `Blip_Contatos_Revisao.xlsx`;
+  contatos de grupos diferentes nunca se misturam no mesmo CSV nem na mesma
+  planilha.
+- Os limites e o formato dos CSVs do Blip são preservados (duas colunas na ordem
+  `Número ou BSUID` e `Nome`, máximo de 100 contatos e 100 KB reais por arquivo,
+  UTF-8 sem BOM, separador vírgula, `+` preservado) e nenhum `Blip_*.csv`
+  existente é sobrescrito silenciosamente.
+
+### Duas opções de saída na interface
+
+A interface passa a oferecer **somente duas** opções de saída:
+
+- **Opção A — Planilha completa + números convertidos.** Gera a planilha
+  completa consolidada (`<nome>_tratado.xlsx`) e a lista de telefones convertidos
+  (`<nome>_telefones.xlsx`). Corresponde exatamente ao comportamento das "duas
+  saídas" já existente, sem mudança de campos, colunas, formatação ou regras.
+- **Opção B — Blip — listas de contatos (separadas por DDD).** Opção principal da
+  operação comercial: prepara os contatos, separa automaticamente nos quatro
+  grupos e gera, para cada grupo com contatos, os CSVs e a planilha de revisão na
+  estrutura `Blip/DDD_x/`.
+
+As opções intermediárias ou redundantes deixaram de aparecer na interface. As
+funções e constantes internas que ainda sustentam compatibilidade e testes
+foram preservadas — a simplificação é da **experiência de uso**, não da base de
+código.
+
+### Reimportação de revisão com reclassificação por DDD
+
+Ao gerar os CSVs finais a partir das planilhas revisadas, o usuário pode
+selecionar **múltiplos** arquivos de revisão (um por grupo). O sistema não confia
+cegamente na pasta ou na aba de origem: cada contato é **reclassificado pelo
+telefone atual** com a mesma regra conservadora de DDD. Assim:
+
+- Se o telefone foi alterado e mudou de DDD, o contato é encaminhado ao grupo
+  correto.
+- Se o telefone deixou de ser identificável com segurança, o contato vai para
+  SEM_DDD.
+- Os contatos são reagrupados e os limites de 100 contatos e 100 KB são
+  reaplicados por grupo.
+
+O resumo da operação informa quantos **contatos mudaram de grupo** após a revisão
+(considerando a origem conhecida pela pasta-pai do arquivo). As planilhas de
+revisão **originais não são modificadas**.
+
+### Feedback de sucesso
+
+Na preparação Blip, o resumo informa o total de contatos processados, a
+quantidade em cada grupo, os CSVs gerados por grupo, a quantidade sem DDD
+identificável e a localização da pasta raiz `Blip/`. Na geração dos CSVs
+revisados, o resumo informa o total exportado, quantos contatos mudaram de grupo,
+os CSVs por grupo, a quantidade em SEM_DDD e a localização. Nenhum sucesso é
+exibido antes de concluir a gravação de todos os arquivos; em caso de erro,
+nenhuma mensagem de sucesso é mostrada.
+
 ## Histórico de versões
 
 - **V1 — concluída:** processamento inicial.
@@ -352,3 +471,12 @@ interface e cliques repetidos não iniciam execuções simultâneas.
 - **V3 (Blip) — concluída:** modalidade "Blip — lista de contatos" com geração
   de CSVs (até 100 contatos / 100 KB), Excel de conferência por lote e geração
   dos CSVs definitivos a partir do Excel revisado. Fluxos V1/V2 inalterados.
+- **V3.1 (separação por DDD) — concluída:** classificação automática dos
+  contatos Blip em quatro grupos (DDD_47, DDD_49, DDD_48_E_OUTROS e SEM_DDD) com
+  regra conservadora de identificação do DDD, exportação na estrutura
+  `Blip/DDD_x/` (subpasta e numeração independentes por grupo, um Excel de
+  revisão por grupo), simplificação da interface para duas opções de saída
+  (A: planilha completa + números convertidos; B: Blip separado por DDD) e
+  reimportação de múltiplas planilhas de revisão com reclassificação pelo
+  telefone atual e contador de contatos que mudaram de grupo. Os originais de
+  revisão não são modificados e os fluxos V1/V2/V3 permanecem inalterados.

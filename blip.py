@@ -51,6 +51,24 @@ NOME_EXCEL_REVISAO = "Blip_Contatos_Revisao.xlsx"
 PREFIXO_ABA = "Lote_"
 
 
+# ---------------------------------------------------------------------------
+# Constantes de grupo por DDD (V3.1)
+# ---------------------------------------------------------------------------
+GRUPO_DDD_47 = "DDD_47"
+GRUPO_DDD_49 = "DDD_49"
+GRUPO_DDD_48_OUTROS = "DDD_48_E_OUTROS"
+GRUPO_SEM_DDD = "SEM_DDD"
+# Ordem fixa dos grupos (usada na separação e na criação de pastas).
+GRUPOS_DDD: tuple[str, str, str, str] = (
+    GRUPO_DDD_47,
+    GRUPO_DDD_49,
+    GRUPO_DDD_48_OUTROS,
+    GRUPO_SEM_DDD,
+)
+# Subpasta raiz da exportação Blip por grupo de DDD.
+SUBPASTA_BLIP = "Blip"
+
+
 class BlipError(ValueError):
     """Erro de preparação/validação da lista Blip apresentável ao usuário."""
 
@@ -127,6 +145,85 @@ def validar_identificador(valor: Any) -> tuple[bool, str]:
     if " " not in texto and _BSUID_PLAUSIVEL.match(texto):
         return True, texto
     return False, texto
+
+
+# ---------------------------------------------------------------------------
+# Classificação por DDD brasileiro (V3.1)
+# ---------------------------------------------------------------------------
+def extrair_ddd_brasil(identificador: Any) -> str | None:
+    """Extrai o DDD brasileiro de um identificador, de forma conservadora.
+
+    Retorna o DDD (dois dígitos, como string) somente quando é possível
+    determiná-lo com segurança a partir de um telefone brasileiro. Caso
+    contrário retorna ``None`` — nunca inventamos DDD.
+
+    Decisões conservadoras:
+
+    - Se o identificador contiver letra (BSUID) ou não parecer telefone,
+      retorna ``None``.
+    - Só reconhecemos um número como brasileiro quando os dígitos começam com
+      ``55`` E o total de dígitos é 12 (DDI + DDD + 8) ou 13 (DDI + DDD + 9);
+      o DDD são os dois dígitos logo após o ``55``.
+    - ``+55`` (ou ``55``) com comprimento incompatível com um telefone BR
+      retorna ``None`` (não forçamos uma leitura de DDD).
+    - Telefone internacional não-BR (ex.: ``+1...``, ``+351...``, ``+44...``)
+      retorna ``None``: os dois primeiros dígitos NÃO são tratados como DDD BR.
+    - Telefone sem o ``55`` cujo tamanho não permita inferir com segurança
+      retorna ``None``.
+    - O DDD é validado na faixa 11-99; fora dela retorna ``None``.
+    """
+    texto = "" if identificador is None else str(identificador).strip()
+    if texto == "" or texto.lower() == "nan":
+        return None
+    # Se houver qualquer letra, não é telefone (provável BSUID) -> None.
+    if any(caractere.isalpha() for caractere in texto):
+        return None
+    digitos = _SO_DIGITOS.sub("", texto)
+    if digitos == "":
+        return None
+    # Brasil: precisa começar com o DDI 55 e ter 12 ou 13 dígitos no total.
+    if not digitos.startswith("55"):
+        return None
+    if len(digitos) not in (12, 13):
+        return None
+    ddd = digitos[2:4]
+    # DDD válido no Brasil está na faixa 11-99.
+    if not (11 <= int(ddd) <= 99):
+        return None
+    return ddd
+
+
+def classificar_ddd(identificador: Any) -> str:
+    """Classifica um identificador em exatamente um dos quatro grupos de DDD.
+
+    - DDD 47 -> :data:`GRUPO_DDD_47`.
+    - DDD 49 -> :data:`GRUPO_DDD_49`.
+    - Qualquer outro DDD BR válido (inclui 48) -> :data:`GRUPO_DDD_48_OUTROS`.
+    - Sem DDD BR identificável (BSUID, internacional não-BR, inválido) ->
+      :data:`GRUPO_SEM_DDD`.
+    """
+    ddd = extrair_ddd_brasil(identificador)
+    if ddd is None:
+        return GRUPO_SEM_DDD
+    if ddd == "47":
+        return GRUPO_DDD_47
+    if ddd == "49":
+        return GRUPO_DDD_49
+    return GRUPO_DDD_48_OUTROS
+
+
+def separar_por_ddd(
+    contatos: list[tuple[str, str]],
+) -> dict[str, list[tuple[str, str]]]:
+    """Separa os contatos pelos quatro grupos de DDD, preservando a ordem.
+
+    Retorna sempre as quatro chaves de :data:`GRUPOS_DDD`, na ordem fixa, cada
+    uma com a lista dos contatos daquele grupo (lista vazia quando não houver).
+    """
+    grupos: dict[str, list[tuple[str, str]]] = {grupo: [] for grupo in GRUPOS_DDD}
+    for identificador, nome in contatos:
+        grupos[classificar_ddd(identificador)].append((identificador, nome))
+    return grupos
 
 
 # ---------------------------------------------------------------------------
@@ -341,13 +438,21 @@ def _nome_aba(numero: int) -> str:
 
 
 def gerar_excel_revisao(
-    lotes: list[list[tuple[str, str]]], pasta_saida: str | Path
+    lotes: list[list[tuple[str, str]]],
+    pasta_saida: str | Path,
+    prefixo_aba: str = "",
 ) -> Path:
     """Gera o Excel de conferência: uma aba por lote, telefone como texto.
 
     As colunas são as mesmas dos CSVs, sem índice. Os identificadores são
     gravados como texto (format '@') para preservar o ``+`` e evitar notação
     científica. Aplica autofiltro no cabeçalho de cada aba.
+
+    ``prefixo_aba`` (opcional, V3.1) acrescenta uma identificação de grupo ao
+    nome de cada aba (ex.: ``DDD_47_Lote_001``), sem alterar a primeira linha
+    ``[COLUNA_ID, COLUNA_NOME]`` — de modo que :func:`ler_excel_revisado`
+    continua lendo normalmente. Com o padrão vazio, o comportamento é idêntico
+    ao da V3.
     """
     from openpyxl import Workbook
 
@@ -361,7 +466,11 @@ def gerar_excel_revisao(
 
     lotes_efetivos = lotes if lotes else [[]]
     for numero, lote in enumerate(lotes_efetivos, start=1):
-        aba = workbook.create_sheet(title=_nome_aba(numero))
+        titulo = _nome_aba(numero)
+        if prefixo_aba:
+            # Excel limita o nome da aba a 31 caracteres.
+            titulo = f"{prefixo_aba}_{titulo}"[:31]
+        aba = workbook.create_sheet(title=titulo)
         aba.append([COLUNA_ID, COLUNA_NOME])
         for identificador, nome in lote:
             aba.append([identificador, nome])
@@ -410,6 +519,118 @@ def gerar_blip_de_planilhas(
 
     final, metricas = processar_consolidado(caminhos)
     resumo = preparar_blip(final, pasta_saida)
+    return {**resumo, "metricas_processamento": metricas}
+
+
+# ---------------------------------------------------------------------------
+# Fluxo 1 (V3.1): gerar a saída Blip separada por grupo de DDD
+# ---------------------------------------------------------------------------
+def _exportar_grupo(
+    grupo: str,
+    contatos: list[tuple[str, str]],
+    pasta_raiz: Path,
+) -> dict[str, Any]:
+    """Gera CSVs + Excel de revisão de UM grupo na subpasta ``pasta_raiz/<grupo>``.
+
+    A numeração dos CSVs reinicia em ``Blip_001.csv`` dentro da subpasta e a
+    anti-sobrescrita de :func:`_preparar_pasta_saida` roda por subpasta.
+    """
+    pasta_grupo = pasta_raiz / grupo
+    lotes, invalidos_tamanho = dividir_em_lotes(contatos)
+    csvs = gravar_csvs(lotes, pasta_grupo)
+    excel = gerar_excel_revisao(lotes, pasta_grupo, prefixo_aba=grupo)
+    return {
+        "grupo": grupo,
+        "pasta": pasta_grupo,
+        "contatos": sum(len(lote) for lote in lotes),
+        "lotes": len(lotes),
+        "arquivos_gerados": [c["arquivo"] for c in csvs],
+        "detalhes_csv": csvs,
+        "excel_revisao": excel,
+        "invalidos": [r.como_dict() for r in invalidos_tamanho],
+        "total_invalidos": len(invalidos_tamanho),
+    }
+
+
+def _resumo_por_ddd(
+    grupos_contatos: dict[str, list[tuple[str, str]]],
+    pasta_raiz: Path,
+    invalidos_iniciais: list[RegistroInvalido],
+    mudaram_de_grupo: int | None = None,
+) -> dict[str, Any]:
+    """Exporta cada grupo com contatos e monta o resumo agregado da V3.1.
+
+    Cria a subpasta de um grupo apenas quando ele tem contatos. Agrega os
+    totais globais e preserva chaves já usadas pela UI (``contatos_exportados``,
+    ``lotes``, ``arquivos_gerados``, ``total_invalidos``).
+    """
+    por_grupo: dict[str, dict[str, Any]] = {}
+    arquivos_todos: list[Path] = []
+    invalidos_total = list(invalidos_iniciais)
+    total_lotes = 0
+    total_contatos = 0
+    totais_por_grupo: dict[str, int] = {grupo: 0 for grupo in GRUPOS_DDD}
+
+    for grupo in GRUPOS_DDD:
+        contatos = grupos_contatos.get(grupo, [])
+        totais_por_grupo[grupo] = len(contatos)
+        if not contatos:
+            continue  # grupo vazio NÃO cria pasta
+        detalhe = _exportar_grupo(grupo, contatos, pasta_raiz)
+        por_grupo[grupo] = detalhe
+        arquivos_todos.extend(detalhe["arquivos_gerados"])
+        total_lotes += detalhe["lotes"]
+        total_contatos += detalhe["contatos"]
+        for item in detalhe["invalidos"]:
+            invalidos_total.append(
+                RegistroInvalido(
+                    indice=item["indice"],
+                    identificador=item["identificador"],
+                    nome=item["nome"],
+                    motivo=item["motivo"],
+                )
+            )
+
+    resumo: dict[str, Any] = {
+        "pasta_raiz": pasta_raiz,
+        "por_grupo": por_grupo,
+        "totais_por_grupo": totais_por_grupo,
+        "contatos_exportados": total_contatos,
+        "lotes": total_lotes,
+        "arquivos_gerados": arquivos_todos,
+        "total_contatos": total_contatos,
+        "total_sem_ddd": totais_por_grupo[GRUPO_SEM_DDD],
+        "invalidos": [r.como_dict() for r in invalidos_total],
+        "total_invalidos": len(invalidos_total),
+    }
+    if mudaram_de_grupo is not None:
+        resumo["mudaram_de_grupo"] = mudaram_de_grupo
+    return resumo
+
+
+def preparar_blip_por_ddd(
+    final: pd.DataFrame, pasta_saida: str | Path
+) -> dict[str, Any]:
+    """Prepara a saída Blip separada por grupo de DDD a partir do canônico final.
+
+    Estrutura gerada: ``<pasta_saida>/Blip/<GRUPO>/Blip_001.csv...`` +
+    ``Blip_Contatos_Revisao.xlsx``, com uma subpasta por grupo COM contatos.
+    """
+    contatos, invalidos_prep = preparar_contatos(final)
+    grupos = separar_por_ddd(contatos)
+    pasta_raiz = Path(pasta_saida) / SUBPASTA_BLIP
+    pasta_raiz.mkdir(parents=True, exist_ok=True)
+    return _resumo_por_ddd(grupos, pasta_raiz, invalidos_prep)
+
+
+def gerar_blip_por_ddd_de_planilhas(
+    caminhos: list[str | Path], pasta_saida: str | Path
+) -> dict[str, Any]:
+    """Executa o pipeline V2 e prepara a saída Blip separada por grupo de DDD."""
+    from pipeline_v2 import processar_consolidado
+
+    final, metricas = processar_consolidado(caminhos)
+    resumo = preparar_blip_por_ddd(final, pasta_saida)
     return {**resumo, "metricas_processamento": metricas}
 
 
@@ -492,6 +713,62 @@ def gerar_csvs_do_excel_revisado(
 
     csvs = gravar_csvs(lotes, pasta_saida)
     return _resumo(validos, lotes, csvs, None, invalidos)
+
+
+# ---------------------------------------------------------------------------
+# Fluxo 2 (V3.1): gerar CSVs por grupo a partir das planilhas revisadas,
+# reclassificando pelo DDD do telefone atual.
+# ---------------------------------------------------------------------------
+def _grupo_de_origem(caminho: Path) -> str | None:
+    """Deriva o grupo de origem pelo nome da pasta-pai do arquivo, se for um
+    grupo conhecido; caso contrário retorna ``None`` (origem desconhecida)."""
+    pai = caminho.parent.name
+    return pai if pai in GRUPOS_DDD else None
+
+
+def gerar_csvs_por_ddd_de_revisao(
+    fontes: list[str | Path], pasta_saida: str | Path
+) -> dict[str, Any]:
+    """Gera os CSVs definitivos por grupo a partir das planilhas revisadas.
+
+    Para cada ``.xlsx`` em ``fontes``: lê com :func:`ler_excel_revisado`,
+    deriva o grupo de ORIGEM pelo nome da pasta-pai (quando for um de
+    :data:`GRUPOS_DDD`), valida cada identificador (inválidos vão ao relatório,
+    sem descarte silencioso) e RECLASSIFICA cada contato válido pelo telefone
+    atual com :func:`classificar_ddd`. Em seguida reaplica os limites por grupo
+    e grava na estrutura ``<pasta_saida>/Blip/<GRUPO>/``.
+
+    Conta ``mudaram_de_grupo`` apenas quando a origem é conhecida e difere do
+    grupo recalculado. NÃO modifica os arquivos ``.xlsx`` de origem.
+    """
+    grupos: dict[str, list[tuple[str, str]]] = {grupo: [] for grupo in GRUPOS_DDD}
+    invalidos: list[RegistroInvalido] = []
+    mudaram_de_grupo = 0
+
+    for fonte in fontes:
+        caminho = Path(fonte)
+        origem = _grupo_de_origem(caminho)
+        brutos = ler_excel_revisado(caminho)
+        for posicao, (identificador_bruto, nome) in enumerate(brutos):
+            ok, identificador = validar_identificador(identificador_bruto)
+            if not ok:
+                invalidos.append(
+                    RegistroInvalido(
+                        indice=posicao,
+                        identificador=identificador_bruto,
+                        nome=nome,
+                        motivo="Identificador ausente ou inválido no Excel revisado.",
+                    )
+                )
+                continue
+            grupo = classificar_ddd(identificador)
+            grupos[grupo].append((identificador, nome))
+            if origem is not None and origem != grupo:
+                mudaram_de_grupo += 1
+
+    pasta_raiz = Path(pasta_saida) / SUBPASTA_BLIP
+    pasta_raiz.mkdir(parents=True, exist_ok=True)
+    return _resumo_por_ddd(grupos, pasta_raiz, invalidos, mudaram_de_grupo=mudaram_de_grupo)
 
 
 # ---------------------------------------------------------------------------

@@ -35,3 +35,6 @@ Meus%20Clientes*.xlsx
 
 # Arquivo local sem extensão
 limpeza e conversão de números
+
+# Artefatos internos de workflow do agente (planejamento/revisão)
+.agents/
