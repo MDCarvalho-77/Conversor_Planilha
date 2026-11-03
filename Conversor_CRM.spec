@@ -31,6 +31,7 @@ a = Analysis(
         "adapters",
         "pipeline_v2",
         "blip",
+        "cursos",
     ],
     hookspath=[],
     hooksconfig={},

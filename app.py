@@ -40,9 +40,13 @@ from blip import (
     MAX_BYTES_POR_ARQUIVO,
     MAX_CONTATOS_POR_ARQUIVO,
     BlipError,
+    CursoColunaError,
+    detectar_formato_revisao,
     gerar_blip_de_planilhas,
+    gerar_blip_por_curso_e_ddd_de_planilhas,
     gerar_blip_por_ddd_de_planilhas,
     gerar_csvs_do_excel_revisado,
+    gerar_csvs_por_curso_e_ddd_de_revisao,
     gerar_csvs_por_ddd_de_revisao,
 )
 
@@ -86,6 +90,7 @@ FORMATOS_CLASSICOS = (
 # funções subjacentes, que permanecem disponíveis para compatibilidade/testes.
 OPCAO_COMPLETA_NUMEROS = "Planilha completa + números convertidos"
 OPCAO_BLIP_DDD = "Blip — listas de contatos (separadas por DDD)"
+OPCAO_BLIP_CURSO_DDD = "Blip - listas de contatos separadas por curso e DDD"
 
 
 def _colunas_visiveis(caminho: Path) -> set[str]:
@@ -208,6 +213,11 @@ class ConversorPlanilhasApp(ctk.CTk):
                 "Separa automaticamente por grupo de DDD (47, 49, 48/outros "
                 "e SEM_DDD): CSVs e Excel de revisão por grupo.",
             ),
+            (
+                OPCAO_BLIP_CURSO_DDD,
+                "Separa por curso e, dentro de cada curso, por grupo de DDD. "
+                "A COLUNA DE CURSO É OBRIGATÓRIA em todas as planilhas.",
+            ),
         )
         for indice, (formato, descricao) in enumerate(opcoes):
             coluna = indice % 2
@@ -254,6 +264,8 @@ class ConversorPlanilhasApp(ctk.CTk):
             area,
             text=(
                 "Depois de revisar o Excel de contatos, gere os CSVs definitivos. "
+                "O formato é detectado automaticamente: aceita as revisões antigas "
+                "de 2 colunas (por DDD) e as novas de 4 colunas (por curso e DDD). "
                 "Os limites de 100 contatos e 100 KB são reaplicados."
             ),
             text_color=TEXTO_SECUNDARIO,
@@ -371,14 +383,17 @@ class ConversorPlanilhasApp(ctk.CTk):
         if not self.caminhos_entrada or self.processando:
             return
         formato = self.formato_saida.get()
-        self._operacao_atual = (
-            "blip_preparacao" if formato == OPCAO_BLIP_DDD else "padrao"
-        )
-
-        # No modo Blip, a pasta de saída é escolhida pelo usuário (na thread
-        # principal) antes de iniciar o processamento pesado.
-        pasta_blip: Path | None = None
         if formato == OPCAO_BLIP_DDD:
+            self._operacao_atual = "blip_preparacao"
+        elif formato == OPCAO_BLIP_CURSO_DDD:
+            self._operacao_atual = "blip_curso_ddd_preparacao"
+        else:
+            self._operacao_atual = "padrao"
+
+        # No modo Blip (por DDD ou por curso+DDD), a pasta de saída é escolhida
+        # pelo usuário (na thread principal) antes do processamento pesado.
+        pasta_blip: Path | None = None
+        if formato in (OPCAO_BLIP_DDD, OPCAO_BLIP_CURSO_DDD):
             escolha = filedialog.askdirectory(
                 title="Escolha a pasta de saída para os arquivos do Blip"
             )
@@ -409,15 +424,20 @@ class ConversorPlanilhasApp(ctk.CTk):
     ) -> None:
         """Executa leitura, validação e geração fora da thread da interface.
 
-        Roteamento (V3.1): a Opção B (Blip por DDD) usa o pipeline V2 +
-        preparação Blip separada por grupo de DDD. A Opção A (planilha completa
-        + números convertidos) usa o pipeline V2/canônico com
-        ``FORMATO_AMBAS_SAIDAS``, produzindo ``_tratado.xlsx`` + ``_telefones.xlsx``.
+        Roteamento: a Opção B (Blip por DDD) usa o pipeline V2 + preparação Blip
+        separada por grupo de DDD. A Opção C (V3.2, Blip por curso e DDD) valida
+        a coluna de curso obrigatória e separa por curso e, dentro de cada
+        curso, por grupo de DDD. A Opção A (planilha completa + números
+        convertidos) usa o pipeline V2/canônico com ``FORMATO_AMBAS_SAIDAS``,
+        produzindo ``_tratado.xlsx`` + ``_telefones.xlsx``.
         """
         try:
             if formato == OPCAO_BLIP_DDD:
                 assert pasta_blip is not None
                 resultado = gerar_blip_por_ddd_de_planilhas(caminhos, pasta_blip)
+            elif formato == OPCAO_BLIP_CURSO_DDD:
+                assert pasta_blip is not None
+                resultado = gerar_blip_por_curso_e_ddd_de_planilhas(caminhos, pasta_blip)
             else:
                 resultado = gerar_saidas_v2(caminhos, FORMATO_AMBAS_SAIDAS)
         except Exception as erro:
@@ -452,6 +472,10 @@ class ConversorPlanilhasApp(ctk.CTk):
             self._mostrar_resultado_blip(resultado, revisao=False)
         elif self._operacao_atual == "blip_revisao":
             self._mostrar_resultado_blip(resultado, revisao=True)
+        elif self._operacao_atual == "blip_curso_ddd_preparacao":
+            self._mostrar_resultado_blip_curso_ddd(resultado, revisao=False)
+        elif self._operacao_atual == "blip_curso_ddd_revisao":
+            self._mostrar_resultado_blip_curso_ddd(resultado, revisao=True)
         else:
             self._mostrar_resultado_padrao(resultado)
 
@@ -527,12 +551,74 @@ class ConversorPlanilhasApp(ctk.CTk):
         self.status.configure(text=status_texto, text_color=VERDE_SUCESSO)
         messagebox.showinfo(titulo, texto, parent=self)
 
+    def _mostrar_resultado_blip_curso_ddd(
+        self, resumo: dict[str, object], revisao: bool = False
+    ) -> None:
+        """Exibe o resumo do modo Blip por curso e DDD (V3.2)."""
+        metricas = resumo.get("metricas_processamento", {})
+        if isinstance(metricas, dict):
+            for chave, valor in self.valores_metricas.items():
+                self.valores_metricas[chave].configure(text=str(metricas.get(chave, "—")))
+
+        if revisao:
+            linhas = [
+                f"Total de contatos exportados: {resumo.get('contatos_exportados', '—')}",
+                f"Mudaram de curso: {resumo.get('mudaram_de_curso', 0)}",
+                f"Mudaram de DDD: {resumo.get('mudaram_de_ddd', 0)}",
+            ]
+        else:
+            linhas = [
+                f"Total de contatos processados: {resumo.get('total_contatos', '—')}",
+                f"Cursos identificados: {resumo.get('total_cursos_identificados', '—')}",
+            ]
+        linhas.extend(self._linhas_curso_ddd(resumo).splitlines())
+        linhas.append(
+            f"CURSO_NAO_IDENTIFICADO: {resumo.get('total_curso_nao_identificado', 0)} contato(s)"
+        )
+        if revisao:
+            linhas.append(
+                f"Foram p/ CURSO_NAO_IDENTIFICADO: "
+                f"{resumo.get('foram_para_curso_nao_identificado', 0)}"
+            )
+            linhas.append(f"Foram p/ SEM_DDD: {resumo.get('foram_para_sem_ddd', 0)}")
+        linhas.append(f"CSVs no total: {resumo.get('total_csvs', resumo.get('lotes', '—'))}")
+        if resumo.get("total_invalidos"):
+            linhas.append(f"Registros inválidos (não exportados): {resumo['total_invalidos']}")
+
+        pasta_raiz = resumo.get("pasta_raiz")
+        if pasta_raiz is not None:
+            linhas.append(f"Pasta Blip: {Path(pasta_raiz)}")  # type: ignore[arg-type]
+
+        self.arquivos_gerados.configure(text="\n".join(linhas))
+        if pasta_raiz is not None:
+            self.pasta_saida = Path(pasta_raiz)  # type: ignore[arg-type]
+        else:
+            arquivos = [Path(a) for a in resumo.get("arquivos_gerados", [])]  # type: ignore[arg-type]
+            if arquivos:
+                self.pasta_saida = arquivos[0].parent
+        if self.pasta_saida is not None:
+            self.botao_abrir_pasta.configure(state="normal")
+
+        if revisao:
+            titulo = "CSVs finais gerados"
+            status_texto = "CSVs finais por curso e DDD gerados com sucesso!"
+            texto = self._texto_sucesso_blip_revisao_curso_ddd(resumo)
+        else:
+            titulo = "Preparação Blip concluída"
+            status_texto = "Preparação para o Blip (curso e DDD) concluída com sucesso!"
+            texto = self._texto_sucesso_blip_preparacao_curso_ddd(resumo)
+        self.status.configure(text=status_texto, text_color=VERDE_SUCESSO)
+        messagebox.showinfo(titulo, texto, parent=self)
+
     def gerar_csvs_revisados(self) -> None:
         """Gera os CSVs definitivos a partir de um Excel de revisão editado."""
         if self.processando:
             return
         caminhos_excel = filedialog.askopenfilenames(
-            title="Selecionar os Excel revisados do Blip (um por grupo de DDD)",
+            title=(
+                "Selecionar os Excel revisados do Blip "
+                "(revisões antigas de 2 colunas ou novas de 4 colunas)"
+            ),
             filetypes=[("Planilhas Excel", "*.xlsx")],
         )
         if not caminhos_excel:
@@ -556,9 +642,31 @@ class ConversorPlanilhasApp(ctk.CTk):
         ).start()
 
     def _executar_revisao(self, caminhos_excel: list[Path], pasta_saida: Path) -> None:
-        """Gera os CSVs definitivos por grupo de DDD fora da thread da interface."""
+        """Gera os CSVs definitivos a partir das planilhas revisadas (autodetecção).
+
+        Cada arquivo é classificado por :func:`blip.detectar_formato_revisao`
+        pelos cabeçalhos das abas visíveis (não apenas pela contagem de colunas).
+        Revisões antigas de 2 colunas (V3.1) seguem o fluxo
+        :func:`gerar_csvs_por_ddd_de_revisao`; revisões novas de 4 colunas (V3.2)
+        usam :func:`gerar_csvs_por_curso_e_ddd_de_revisao`. Com seleção de
+        formatos mistos, cada formato é processado em separado (conservador),
+        preferindo o fluxo curso+DDD quando há ao menos um arquivo V3.2.
+        """
         try:
-            resumo = gerar_csvs_por_ddd_de_revisao(caminhos_excel, pasta_saida)
+            fontes_v31: list[Path] = []
+            fontes_v32: list[Path] = []
+            for caminho in caminhos_excel:
+                if detectar_formato_revisao(caminho) == "v32":
+                    fontes_v32.append(caminho)
+                else:
+                    fontes_v31.append(caminho)
+
+            if fontes_v32:
+                self._operacao_atual = "blip_curso_ddd_revisao"
+                resumo = gerar_csvs_por_curso_e_ddd_de_revisao(fontes_v32, pasta_saida)
+            else:
+                self._operacao_atual = "blip_revisao"
+                resumo = gerar_csvs_por_ddd_de_revisao(fontes_v31, pasta_saida)
         except Exception as erro:
             self.after(0, self._concluir_processamento, None, erro)
         else:
@@ -658,6 +766,59 @@ class ConversorPlanilhasApp(ctk.CTk):
             f"{linhas_grupos}\n"
             f"SEM_DDD: {resumo.get('total_sem_ddd', 0)}\n"
             f"CSVs gerados (total): {resumo.get('lotes', '—')}\n"
+            f"Pasta Blip: {pasta_texto}"
+        )
+
+    @staticmethod
+    def _linhas_curso_ddd(resumo: dict[str, object]) -> str:
+        """Monta as linhas 'Curso: N contato(s)' e DDD por grupo (puro).
+
+        Usa ``contatos_por_curso`` (por curso) e ``contatos_por_ddd`` (por grupo
+        de DDD) do resumo agregado do fluxo curso+DDD.
+        """
+        linhas: list[str] = []
+        contatos_por_curso = resumo.get("contatos_por_curso", {})
+        if isinstance(contatos_por_curso, dict):
+            for curso, total in contatos_por_curso.items():
+                linhas.append(f"Curso {curso}: {total} contato(s)")
+        contatos_por_ddd = resumo.get("contatos_por_ddd", {})
+        if isinstance(contatos_por_ddd, dict):
+            for grupo in GRUPOS_DDD:
+                linhas.append(f"{grupo}: {contatos_por_ddd.get(grupo, 0)} contato(s)")
+        return "\n".join(linhas)
+
+    @staticmethod
+    def _texto_sucesso_blip_preparacao_curso_ddd(resumo: dict[str, object]) -> str:
+        """Monta o texto de sucesso da preparação Blip por curso e DDD (puro)."""
+        pasta_raiz = resumo.get("pasta_raiz")
+        pasta_texto = str(Path(pasta_raiz)) if pasta_raiz is not None else "—"  # type: ignore[arg-type]
+        linhas_detalhe = ConversorPlanilhasApp._linhas_curso_ddd(resumo)
+        return (
+            "Preparação para o Blip (curso e DDD) concluída com sucesso!\n"
+            f"Total de contatos processados: {resumo.get('total_contatos', '—')}\n"
+            f"Cursos identificados: {resumo.get('total_cursos_identificados', '—')}\n"
+            f"CURSO_NAO_IDENTIFICADO: {resumo.get('total_curso_nao_identificado', 0)}\n"
+            f"{linhas_detalhe}\n"
+            f"CSVs gerados (total): {resumo.get('total_csvs', resumo.get('lotes', '—'))}\n"
+            f"Pasta Blip: {pasta_texto}"
+        )
+
+    @staticmethod
+    def _texto_sucesso_blip_revisao_curso_ddd(resumo: dict[str, object]) -> str:
+        """Monta o texto de sucesso da revisão Blip por curso e DDD (puro)."""
+        pasta_raiz = resumo.get("pasta_raiz")
+        pasta_texto = str(Path(pasta_raiz)) if pasta_raiz is not None else "—"  # type: ignore[arg-type]
+        linhas_detalhe = ConversorPlanilhasApp._linhas_curso_ddd(resumo)
+        return (
+            "CSVs finais por curso e DDD gerados com sucesso!\n"
+            f"Total de contatos exportados: {resumo.get('contatos_exportados', '—')}\n"
+            f"Mudaram de curso: {resumo.get('mudaram_de_curso', 0)}\n"
+            f"Mudaram de DDD: {resumo.get('mudaram_de_ddd', 0)}\n"
+            f"Foram p/ CURSO_NAO_IDENTIFICADO: "
+            f"{resumo.get('foram_para_curso_nao_identificado', 0)}\n"
+            f"Foram p/ SEM_DDD: {resumo.get('foram_para_sem_ddd', 0)}\n"
+            f"{linhas_detalhe}\n"
+            f"CSVs gerados (total): {resumo.get('total_csvs', resumo.get('lotes', '—'))}\n"
             f"Pasta Blip: {pasta_texto}"
         )
 

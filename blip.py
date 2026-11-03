@@ -26,7 +26,14 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from adapters import CANON_NOME_COMPLETO, CANON_TELEFONE
+from adapters import (
+    CANON_CURSO,
+    CANON_EMAIL,
+    CANON_NOME_COMPLETO,
+    CANON_TELEFONE,
+    analisar_coluna_curso,
+)
+import cursos
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +78,15 @@ SUBPASTA_BLIP = "Blip"
 
 class BlipError(ValueError):
     """Erro de preparação/validação da lista Blip apresentável ao usuário."""
+
+
+class CursoColunaError(BlipError):
+    """Requisito D (V3.2): coluna de curso ausente ou ambígua em planilha(s).
+
+    Levantada ANTES de gerar qualquer arquivo quando ao menos uma das planilhas
+    selecionadas não tem uma coluna de curso reconhecível ou tem colunas de
+    curso ambíguas. A mensagem lista TODOS os arquivos problemáticos de uma vez.
+    """
 
 
 class RegistroInvalido:
@@ -769,6 +785,601 @@ def gerar_csvs_por_ddd_de_revisao(
     pasta_raiz = Path(pasta_saida) / SUBPASTA_BLIP
     pasta_raiz.mkdir(parents=True, exist_ok=True)
     return _resumo_por_ddd(grupos, pasta_raiz, invalidos, mudaram_de_grupo=mudaram_de_grupo)
+
+
+# ===========================================================================
+# V3.2: fluxo Curso -> DDD (ADITIVO; não altera nenhuma função V3/V3.1)
+# ===========================================================================
+# Constantes da revisão v3.2 (Excel de 4 colunas). O CSV oficial da Blip
+# continua com EXATAMENTE 2 colunas; e-mail e curso só aparecem no Excel de
+# revisão (nunca no CSV).
+COLUNA_EMAIL = "E-mail"
+COLUNA_CURSO = "Curso"
+COLUNAS_BLIP_V32: tuple[str, str, str, str] = (
+    COLUNA_ID,
+    COLUNA_NOME,
+    COLUNA_EMAIL,
+    COLUNA_CURSO,
+)
+
+# Exemplos de cabeçalhos aceitos, apresentados na mensagem de erro do Requisito D.
+_EXEMPLOS_CABECALHO_CURSO = (
+    "Curso, Nome do Curso, Tipo de Curso, Curso de Interesse, "
+    "Produto Primário ou Nome do Produto"
+)
+
+
+# ---------------------------------------------------------------------------
+# Preparação dos contatos V3.2 (identificador, nome, email, curso)
+# ---------------------------------------------------------------------------
+def preparar_contatos_v32(
+    final: pd.DataFrame,
+) -> tuple[list[tuple[str, str, str, str]], list[RegistroInvalido]]:
+    """Transforma o canônico final em tuplas (ident, nome, email, curso).
+
+    Mantém :func:`preparar_contatos` intacta. As regras são análogas, mais:
+
+    - ``email``: valor de :data:`CANON_EMAIL` (vazio quando ausente; nunca
+      inventado).
+    - ``curso``: :func:`cursos.padronizar_curso` do valor de
+      :data:`CANON_CURSO` (vazio/None/'nan' -> ``CURSO_NAO_IDENTIFICADO``).
+
+    Registros sem identificador (telefone) válido vão para a lista de inválidos
+    (sem descarte silencioso), exatamente como no fluxo original.
+    """
+    contatos: list[tuple[str, str, str, str]] = []
+    invalidos: list[RegistroInvalido] = []
+
+    telefones = final[CANON_TELEFONE] if CANON_TELEFONE in final.columns else None
+    nomes = final[CANON_NOME_COMPLETO] if CANON_NOME_COMPLETO in final.columns else None
+    emails = final[CANON_EMAIL] if CANON_EMAIL in final.columns else None
+    cursos_col = final[CANON_CURSO] if CANON_CURSO in final.columns else None
+
+    for posicao in range(len(final)):
+        bruto_tel = "" if telefones is None else telefones.iloc[posicao]
+        bruto_nome = "" if nomes is None else nomes.iloc[posicao]
+        bruto_email = "" if emails is None else emails.iloc[posicao]
+        bruto_curso = "" if cursos_col is None else cursos_col.iloc[posicao]
+
+        nome = "" if bruto_nome is None else str(bruto_nome).strip()
+        if nome.lower() == "nan":
+            nome = ""
+
+        email = "" if bruto_email is None else str(bruto_email).strip()
+        if email.lower() == "nan":
+            email = ""
+
+        curso = cursos.padronizar_curso(bruto_curso)
+
+        identificador = formatar_identificador_telefone(bruto_tel)
+        if identificador == "":
+            invalidos.append(
+                RegistroInvalido(
+                    indice=posicao,
+                    identificador="" if bruto_tel is None else str(bruto_tel),
+                    nome=nome,
+                    motivo="Registro sem identificador (telefone) válido.",
+                )
+            )
+            continue
+        contatos.append((identificador, nome, email, curso))
+
+    return contatos, invalidos
+
+
+# ---------------------------------------------------------------------------
+# Separação por Curso -> DDD
+# ---------------------------------------------------------------------------
+def separar_por_curso_e_ddd(
+    contatos_v32: list[tuple[str, str, str, str]],
+) -> dict[str, dict[str, list[tuple[str, str, str, str]]]]:
+    """Separa os contatos por curso e, dentro de cada curso, por grupo de DDD.
+
+    Retorna ``{curso: {grupo_ddd: [contatos]}}``. Cada curso presente recebe os
+    quatro grupos de :data:`GRUPOS_DDD` (na ordem fixa), ainda que vazios — de
+    modo que o chamador cria pastas apenas para combinações com contatos.
+    O curso :data:`cursos.CURSO_NAO_IDENTIFICADO` também é subdividido pelos
+    quatro grupos. Cada contato cai em exatamente uma combinação curso+DDD.
+    A ordem de inserção dos cursos preserva a ordem de aparição dos contatos.
+    """
+    por_curso: dict[str, dict[str, list[tuple[str, str, str, str]]]] = {}
+    for contato in contatos_v32:
+        curso = contato[3]
+        identificador = contato[0]
+        if curso not in por_curso:
+            por_curso[curso] = {grupo: [] for grupo in GRUPOS_DDD}
+        grupo = classificar_ddd(identificador)
+        por_curso[curso][grupo].append(contato)
+    return por_curso
+
+
+# ---------------------------------------------------------------------------
+# Excel de revisão V3.2 (4 colunas)
+# ---------------------------------------------------------------------------
+def gerar_excel_revisao_v32(
+    lotes_v32: list[list[tuple[str, str, str, str]]],
+    pasta_saida: str | Path,
+    prefixo_aba: str = "",
+) -> Path:
+    """Gera o Excel de conferência V3.2 com 4 colunas por aba.
+
+    Colunas: ``[Número ou BSUID, Nome, E-mail, Curso]``. O identificador
+    (coluna A) é gravado como texto (format '@') para preservar o ``+``.
+    Autofiltro de ``A1`` até ``D<última>``. Uma aba por lote (≤ 100 contatos).
+
+    ``prefixo_aba`` acrescenta a identificação de curso+DDD ao nome da aba,
+    respeitando o limite de 31 caracteres do Excel, SEM alterar a primeira
+    linha de cabeçalho de colunas. E-mail vazio quando ausente (nunca
+    inventado). Função NOVA: não toca em :func:`gerar_excel_revisao`.
+    """
+    from openpyxl import Workbook
+
+    destino = Path(pasta_saida)
+    destino.mkdir(parents=True, exist_ok=True)
+    caminho = destino / NOME_EXCEL_REVISAO
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+
+    lotes_efetivos = lotes_v32 if lotes_v32 else [[]]
+    for numero, lote in enumerate(lotes_efetivos, start=1):
+        titulo = _nome_aba(numero)
+        if prefixo_aba:
+            titulo = f"{prefixo_aba}_{titulo}"[:31]
+        aba = workbook.create_sheet(title=titulo)
+        aba.append(list(COLUNAS_BLIP_V32))
+        for identificador, nome, email, curso in lote:
+            aba.append([identificador, nome, email, curso])
+        # Identificador como texto em todas as linhas de dados.
+        for linha in range(2, 2 + len(lote)):
+            aba.cell(row=linha, column=1).number_format = "@"
+        ultima_linha = 1 + len(lote)
+        aba.auto_filter.ref = f"A1:{get_column_letter(4)}{max(ultima_linha, 1)}"
+        aba.column_dimensions["A"].width = 22
+        aba.column_dimensions["B"].width = 40
+        aba.column_dimensions["C"].width = 30
+        aba.column_dimensions["D"].width = 40
+
+    workbook.save(caminho)
+    return caminho
+
+
+# ---------------------------------------------------------------------------
+# Leitura de cabeçalhos de abas VISÍVEIS (backend, sem GUI)
+# ---------------------------------------------------------------------------
+def colunas_visiveis(caminho: str | Path) -> list[str]:
+    """Lê os cabeçalhos (1ª linha) de todas as abas VISÍVEIS de uma planilha.
+
+    Equivalente de backend ao ``app._colunas_visiveis``: ignora abas ocultas
+    (``hidden``/``veryHidden``) e devolve a união dos rótulos de cabeçalho
+    encontrados, preservando a ordem de aparição e sem repetir. Não modifica o
+    arquivo.
+    """
+    origem = Path(caminho)
+    try:
+        workbook = load_workbook(origem, read_only=True, data_only=True)
+    except Exception as erro:
+        raise BlipError(
+            f"Não foi possível abrir a planilha: '{origem.name}'."
+        ) from erro
+
+    vistos: list[str] = []
+    vistos_set: set[str] = set()
+    try:
+        for aba in workbook.worksheets:
+            if aba.sheet_state != "visible":
+                continue
+            linhas = aba.iter_rows(values_only=True)
+            cabecalho = next(linhas, None)
+            if cabecalho is None:
+                continue
+            for celula in cabecalho:
+                if celula is None:
+                    continue
+                rotulo = str(celula).strip()
+                if rotulo == "" or rotulo.lower() == "nan":
+                    continue
+                if rotulo not in vistos_set:
+                    vistos.append(rotulo)
+                    vistos_set.add(rotulo)
+    finally:
+        workbook.close()
+
+    return vistos
+
+
+# ---------------------------------------------------------------------------
+# Validação do Requisito D (coluna de curso obrigatória nesta modalidade)
+# ---------------------------------------------------------------------------
+def validar_coluna_curso_planilhas(caminhos: list[str | Path]) -> None:
+    """Valida que TODAS as planilhas têm uma coluna de curso reconhecível.
+
+    Para cada arquivo: lê os cabeçalhos das abas visíveis com
+    :func:`colunas_visiveis` e usa :func:`adapters.analisar_coluna_curso`.
+    Se algum arquivo não tiver coluna de curso reconhecida OU tiver colunas
+    ambíguas, levanta :class:`CursoColunaError` com uma mensagem ÚNICA listando
+    TODOS os arquivos problemáticos (e, para ambiguidade, as colunas
+    conflitantes), interrompendo ANTES de gerar qualquer arquivo.
+
+    Um contato com a coluna presente mas SEM valor NÃO interrompe aqui: ele será
+    tratado adiante como ``CURSO_NAO_IDENTIFICADO``.
+    """
+    problemas: list[str] = []
+    for caminho in caminhos:
+        nome_arquivo = Path(caminho).name
+        colunas = colunas_visiveis(caminho)
+        resultado = analisar_coluna_curso(colunas)
+        if resultado.ambigua:
+            candidatas = ", ".join(resultado.candidatas)
+            problemas.append(
+                f"A planilha '{nome_arquivo}' tem colunas de curso ambíguas "
+                f"({candidatas}). Deixe apenas uma coluna de curso."
+            )
+        elif resultado.coluna is None:
+            problemas.append(
+                f"Não foi possível identificar a coluna de curso na planilha "
+                f"'{nome_arquivo}'. Renomeie o cabeçalho para um dos padrões "
+                f"reconhecidos, como: {_EXEMPLOS_CABECALHO_CURSO}."
+            )
+
+    if problemas:
+        raise CursoColunaError(
+            "\n".join(problemas)
+            + "\nCorrija a(s) planilha(s) e selecione novamente os arquivos."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Exportação Curso -> DDD
+# ---------------------------------------------------------------------------
+def _exportar_combinacao_curso_ddd(
+    grupo: str,
+    contatos_v32: list[tuple[str, str, str, str]],
+    pasta_curso: Path,
+) -> dict[str, Any]:
+    """Exporta UMA combinação curso+DDD em ``pasta_curso/<grupo>``.
+
+    O CSV continua com EXATAMENTE 2 colunas: monta pares (ident, nome) e
+    reutiliza :func:`dividir_em_lotes` + :func:`gravar_csvs` (anti-sobrescrita
+    por pasta). O Excel de revisão usa :func:`gerar_excel_revisao_v32` (4
+    colunas, com e-mail e curso). A numeração reinicia em ``Blip_001`` por
+    combinação.
+    """
+    pasta_grupo = pasta_curso / grupo
+    pares = [(ident, nome) for (ident, nome, _email, _curso) in contatos_v32]
+    lotes, invalidos_tamanho = dividir_em_lotes(pares)
+
+    # Reconstrói os lotes de 4 colunas na MESMA ordem dos lotes de 2 colunas.
+    indice = 0
+    lotes_v32: list[list[tuple[str, str, str, str]]] = []
+    for lote in lotes:
+        lotes_v32.append(contatos_v32[indice : indice + len(lote)])
+        indice += len(lote)
+
+    csvs = gravar_csvs(lotes, pasta_grupo)
+    excel = gerar_excel_revisao_v32(lotes_v32, pasta_grupo, prefixo_aba=grupo)
+    return {
+        "grupo": grupo,
+        "pasta": pasta_grupo,
+        "contatos": sum(len(lote) for lote in lotes),
+        "lotes": len(lotes),
+        "arquivos_gerados": [c["arquivo"] for c in csvs],
+        "detalhes_csv": csvs,
+        "excel_revisao": excel,
+        "invalidos": [r.como_dict() for r in invalidos_tamanho],
+        "total_invalidos": len(invalidos_tamanho),
+    }
+
+
+def _resumo_por_curso_e_ddd(
+    por_curso: dict[str, dict[str, list[tuple[str, str, str, str]]]],
+    pasta_raiz: Path,
+    invalidos_iniciais: list[RegistroInvalido],
+) -> dict[str, Any]:
+    """Exporta cada combinação curso+DDD com contatos e monta o resumo agregado.
+
+    Cria pasta apenas para a combinação (curso, grupo) COM contatos. Os nomes de
+    pasta de curso são desambiguados com :func:`cursos.nomes_de_pasta_unicos`.
+    """
+    nomes_pasta = cursos.nomes_de_pasta_unicos(list(por_curso.keys()))
+
+    por_curso_resumo: dict[str, dict[str, Any]] = {}
+    arquivos_todos: list[Path] = []
+    invalidos_total = list(invalidos_iniciais)
+    total_lotes = 0
+    total_contatos = 0
+    total_csvs = 0
+    contatos_por_curso: dict[str, int] = {}
+    contatos_por_ddd: dict[str, int] = {grupo: 0 for grupo in GRUPOS_DDD}
+    csvs_por_combinacao: dict[str, int] = {}
+
+    for curso, grupos in por_curso.items():
+        pasta_curso = pasta_raiz / nomes_pasta[curso]
+        detalhe_grupos: dict[str, Any] = {}
+        total_curso = 0
+        for grupo in GRUPOS_DDD:
+            contatos = grupos.get(grupo, [])
+            contatos_por_ddd[grupo] += len(contatos)
+            if not contatos:
+                continue  # combinação vazia NÃO cria pasta
+            detalhe = _exportar_combinacao_curso_ddd(grupo, contatos, pasta_curso)
+            detalhe_grupos[grupo] = detalhe
+            arquivos_todos.extend(detalhe["arquivos_gerados"])
+            total_lotes += detalhe["lotes"]
+            total_contatos += detalhe["contatos"]
+            total_curso += detalhe["contatos"]
+            n_csvs = len(detalhe["arquivos_gerados"])
+            total_csvs += n_csvs
+            csvs_por_combinacao[f"{curso}/{grupo}"] = n_csvs
+            for item in detalhe["invalidos"]:
+                invalidos_total.append(
+                    RegistroInvalido(
+                        indice=item["indice"],
+                        identificador=item["identificador"],
+                        nome=item["nome"],
+                        motivo=item["motivo"],
+                    )
+                )
+        contatos_por_curso[curso] = total_curso
+        por_curso_resumo[curso] = {
+            "pasta": pasta_curso,
+            "nome_pasta": nomes_pasta[curso],
+            "contatos": total_curso,
+            "por_grupo": detalhe_grupos,
+        }
+
+    cursos_identificados = [
+        curso for curso in por_curso if curso != cursos.CURSO_NAO_IDENTIFICADO
+    ]
+    return {
+        "pasta_raiz": pasta_raiz,
+        "por_curso": por_curso_resumo,
+        "nomes_pasta_curso": nomes_pasta,
+        "total_contatos": total_contatos,
+        "contatos_exportados": total_contatos,
+        "total_cursos_identificados": len(cursos_identificados),
+        "total_curso_nao_identificado": contatos_por_curso.get(
+            cursos.CURSO_NAO_IDENTIFICADO, 0
+        ),
+        "contatos_por_curso": contatos_por_curso,
+        "contatos_por_ddd": contatos_por_ddd,
+        "csvs_por_combinacao": csvs_por_combinacao,
+        "total_csvs": total_csvs,
+        "lotes": total_lotes,
+        "arquivos_gerados": arquivos_todos,
+        "invalidos": [r.como_dict() for r in invalidos_total],
+        "total_invalidos": len(invalidos_total),
+    }
+
+
+def preparar_blip_por_curso_e_ddd(
+    final: pd.DataFrame, pasta_saida: str | Path
+) -> dict[str, Any]:
+    """Prepara a saída Blip separada por curso + grupo de DDD a partir do canônico.
+
+    Estrutura gerada:
+    ``<pasta_saida>/Blip/<Curso_Sanitizado>/<GRUPO_DDD>/Blip_001.csv...`` +
+    ``Blip_Contatos_Revisao.xlsx`` por combinação, com pasta apenas para a
+    combinação COM contatos.
+    """
+    contatos, invalidos_prep = preparar_contatos_v32(final)
+    por_curso = separar_por_curso_e_ddd(contatos)
+    pasta_raiz = Path(pasta_saida) / SUBPASTA_BLIP
+    pasta_raiz.mkdir(parents=True, exist_ok=True)
+    return _resumo_por_curso_e_ddd(por_curso, pasta_raiz, invalidos_prep)
+
+
+def gerar_blip_por_curso_e_ddd_de_planilhas(
+    caminhos: list[str | Path], pasta_saida: str | Path
+) -> dict[str, Any]:
+    """Fluxo V3.2: valida (Requisito D), processa e exporta por curso + DDD.
+
+    1. Valida a coluna de curso em TODAS as planilhas ANTES de tudo
+       (:func:`validar_coluna_curso_planilhas`): interrompe sem gerar nada se
+       houver arquivo sem coluna de curso ou ambíguo.
+    2. Roda ``pipeline_v2.processar_consolidado``.
+    3. ``preparar_contatos_v32`` -> ``separar_por_curso_e_ddd`` -> exportação.
+
+    Não remove nem altera os fluxos V3.1.
+    """
+    from pipeline_v2 import processar_consolidado
+
+    validar_coluna_curso_planilhas(caminhos)
+
+    final, metricas = processar_consolidado(caminhos)
+    resumo = preparar_blip_por_curso_e_ddd(final, pasta_saida)
+    return {**resumo, "metricas_processamento": metricas}
+
+
+# ---------------------------------------------------------------------------
+# Reimportação V3.2: leitura e detecção de formato (2 vs 4 colunas)
+# ---------------------------------------------------------------------------
+def ler_excel_revisao_v32(
+    caminho: str | Path,
+) -> list[tuple[str, str, str, str]]:
+    """Lê as abas visíveis de um Excel de revisão V3.2 (4 colunas).
+
+    Valida que a 1ª linha de cada aba visível é exatamente
+    :data:`COLUNAS_BLIP_V32`. Devolve tuplas (ident, nome, email, curso) na
+    ordem das abas/linhas. Não modifica o arquivo.
+    """
+    origem = Path(caminho)
+    try:
+        workbook = load_workbook(origem, read_only=True, data_only=True)
+    except Exception as erro:
+        raise BlipError(
+            f"Não foi possível abrir o Excel revisado: '{origem.name}'."
+        ) from erro
+
+    registros: list[tuple[str, str, str, str]] = []
+    try:
+        abas = [aba for aba in workbook.worksheets if aba.sheet_state == "visible"]
+        if not abas:
+            raise BlipError("O Excel revisado não possui abas visíveis.")
+        for aba in abas:
+            linhas = aba.iter_rows(values_only=True)
+            cabecalho = next(linhas, None)
+            if cabecalho is None:
+                continue  # aba vazia é ignorada
+            cab = [("" if c is None else str(c).strip()) for c in cabecalho[:4]]
+            if cab != list(COLUNAS_BLIP_V32):
+                raise BlipError(
+                    f"A aba '{aba.title}' não tem as colunas esperadas "
+                    f"{COLUNAS_BLIP_V32}. Encontrado: {cab}."
+                )
+            for linha in linhas:
+                if linha is None:
+                    continue
+                def _celula(pos: int) -> str:
+                    if len(linha) <= pos or linha[pos] is None:
+                        return ""
+                    valor = str(linha[pos]).strip()
+                    return "" if valor.lower() == "nan" else valor
+
+                identificador = _celula(0)
+                nome = _celula(1)
+                email = _celula(2)
+                curso = _celula(3)
+                if identificador == "" and nome == "" and email == "" and curso == "":
+                    continue  # linha totalmente vazia é ignorada
+                registros.append((identificador, nome, email, curso))
+    finally:
+        workbook.close()
+
+    return registros
+
+
+def detectar_formato_revisao(caminho: str | Path) -> str:
+    """Detecta o formato de uma planilha de revisão pelos CABEÇALHOS.
+
+    Olha a 1ª linha das abas visíveis (não só a contagem de colunas):
+
+    - ``[Número ou BSUID, Nome]`` -> ``'v31'``.
+    - ``[Número ou BSUID, Nome, E-mail, Curso]`` -> ``'v32'``.
+
+    Levanta :class:`BlipError` quando nenhuma aba visível tem um cabeçalho
+    reconhecido. Não modifica o arquivo.
+    """
+    origem = Path(caminho)
+    try:
+        workbook = load_workbook(origem, read_only=True, data_only=True)
+    except Exception as erro:
+        raise BlipError(
+            f"Não foi possível abrir a planilha de revisão: '{origem.name}'."
+        ) from erro
+
+    try:
+        for aba in workbook.worksheets:
+            if aba.sheet_state != "visible":
+                continue
+            linhas = aba.iter_rows(values_only=True)
+            cabecalho = next(linhas, None)
+            if cabecalho is None:
+                continue
+            cab = [("" if c is None else str(c).strip()) for c in cabecalho]
+            if cab[:4] == list(COLUNAS_BLIP_V32):
+                return "v32"
+            if cab[:2] == [COLUNA_ID, COLUNA_NOME]:
+                return "v31"
+    finally:
+        workbook.close()
+
+    raise BlipError(
+        f"Não foi possível reconhecer o formato da planilha de revisão "
+        f"'{origem.name}'. Cabeçalhos aceitos: {COLUNAS_BLIP} (2 colunas) "
+        f"ou {COLUNAS_BLIP_V32} (4 colunas)."
+    )
+
+
+def _curso_de_origem(caminho: Path, pasta_raiz: Path | None = None) -> str | None:
+    """Deriva o curso de ORIGEM pela estrutura de pastas Blip/<curso>/<ddd>/.
+
+    Conservador: só devolve um curso quando o arquivo está dentro de
+    ``.../<curso>/<grupo_ddd>/`` (a pasta-pai é um grupo de DDD conhecido e há
+    uma pasta de curso acima dela). Caso contrário retorna ``None``.
+    """
+    ddd_pai = caminho.parent.name
+    if ddd_pai not in GRUPOS_DDD:
+        return None
+    curso_pasta = caminho.parent.parent
+    if curso_pasta is None or curso_pasta == curso_pasta.parent:
+        return None
+    nome = curso_pasta.name
+    return nome if nome else None
+
+
+def gerar_csvs_por_curso_e_ddd_de_revisao(
+    fontes: list[str | Path], pasta_saida: str | Path
+) -> dict[str, Any]:
+    """Gera os CSVs definitivos por curso + DDD a partir das revisões V3.2.
+
+    Para cada fonte, lê com :func:`ler_excel_revisao_v32`, revalida cada
+    identificador (inválidos vão ao relatório, sem descarte), reaplica
+    :func:`cursos.padronizar_curso` (vazio -> ``CURSO_NAO_IDENTIFICADO``) e
+    RECLASSIFICA o DDD pelo telefone atual (:func:`classificar_ddd`;
+    inidentificável -> ``SEM_DDD``). Reorganiza por curso+DDD, recria os lotes e
+    grava na estrutura ``<pasta_saida>/Blip/<curso>/<ddd>/``.
+
+    Formatos mistos na seleção: a escolha conservadora é processar cada arquivo
+    pelo formato detectado; aqui a reimportação V3.2 assume o Excel de 4 colunas.
+    A origem de curso/DDD é derivada da estrutura de pastas quando disponível
+    (``Blip/<curso>/<ddd>/``); quando indisponível, as contagens de "mudaram de
+    curso/DDD" são conservadoras (só contam quando a origem é conhecida).
+
+    NÃO modifica os arquivos de origem.
+    """
+    por_curso: dict[str, dict[str, list[tuple[str, str, str, str]]]] = {}
+    invalidos: list[RegistroInvalido] = []
+    mudaram_de_curso = 0
+    mudaram_de_ddd = 0
+    foram_para_nao_identificado = 0
+    foram_para_sem_ddd = 0
+
+    for fonte in fontes:
+        caminho = Path(fonte)
+        curso_origem = _curso_de_origem(caminho)
+        ddd_origem = caminho.parent.name if caminho.parent.name in GRUPOS_DDD else None
+        brutos = ler_excel_revisao_v32(caminho)
+        for posicao, (ident_bruto, nome, email, curso_bruto) in enumerate(brutos):
+            ok, identificador = validar_identificador(ident_bruto)
+            if not ok:
+                invalidos.append(
+                    RegistroInvalido(
+                        indice=posicao,
+                        identificador=ident_bruto,
+                        nome=nome,
+                        motivo="Identificador ausente ou inválido no Excel revisado.",
+                    )
+                )
+                continue
+            curso = cursos.padronizar_curso(curso_bruto)
+            grupo = classificar_ddd(identificador)
+
+            if curso == cursos.CURSO_NAO_IDENTIFICADO and (
+                curso_origem is None or curso_origem != cursos.CURSO_NAO_IDENTIFICADO
+            ):
+                foram_para_nao_identificado += 1
+            if grupo == GRUPO_SEM_DDD and (
+                ddd_origem is None or ddd_origem != GRUPO_SEM_DDD
+            ):
+                foram_para_sem_ddd += 1
+            if curso_origem is not None and curso_origem != curso:
+                mudaram_de_curso += 1
+            if ddd_origem is not None and ddd_origem != grupo:
+                mudaram_de_ddd += 1
+
+            if curso not in por_curso:
+                por_curso[curso] = {g: [] for g in GRUPOS_DDD}
+            por_curso[curso][grupo].append((identificador, nome, email, curso))
+
+    pasta_raiz = Path(pasta_saida) / SUBPASTA_BLIP
+    pasta_raiz.mkdir(parents=True, exist_ok=True)
+    resumo = _resumo_por_curso_e_ddd(por_curso, pasta_raiz, invalidos)
+    resumo["mudaram_de_curso"] = mudaram_de_curso
+    resumo["mudaram_de_ddd"] = mudaram_de_ddd
+    resumo["foram_para_curso_nao_identificado"] = foram_para_nao_identificado
+    resumo["foram_para_sem_ddd"] = foram_para_sem_ddd
+    return resumo
 
 
 # ---------------------------------------------------------------------------

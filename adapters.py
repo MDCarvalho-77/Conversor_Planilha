@@ -12,7 +12,7 @@ camada é usada exclusivamente pelo pipeline V2.
 from __future__ import annotations
 
 import unicodedata
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import pandas as pd
 
@@ -32,6 +32,9 @@ CANON_TELEFONE = "Telefone"
 CANON_REGIONAL = "Regional/Unidade do Produto"
 CANON_NOME_PRODUTO = "Nome do Produto"
 CANON_PRODUTO_PRIMARIO = "Produto Primário"
+# Campo adicionado na V3.2 (aditivo): fica ao FINAL do modelo canônico para
+# preservar a compatibilidade de ordem com a V3.1.
+CANON_CURSO = "Curso"
 
 # Ordem canônica estável das colunas do modelo interno.
 COLUNAS_CANONICAS: tuple[str, ...] = (
@@ -43,6 +46,7 @@ COLUNAS_CANONICAS: tuple[str, ...] = (
     CANON_REGIONAL,
     CANON_NOME_PRODUTO,
     CANON_PRODUTO_PRIMARIO,
+    CANON_CURSO,
 )
 
 
@@ -167,6 +171,153 @@ def _localizar_primeira(colunas: object, rotulos: tuple[str, ...]) -> str | None
 
 
 # ---------------------------------------------------------------------------
+# Reconhecimento da coluna de curso (V3.2, aditivo)
+# ---------------------------------------------------------------------------
+# Lista CONTROLADA e extensível de rótulos aceitos como "curso". Assim como as
+# demais listas de rótulos, o reconhecimento olha apenas o NOME da coluna (via
+# normalizar_rotulo), nunca o conteúdo das células. Deliberadamente NÃO inclui
+# 'Valor do Produto', 'Código do Produto' nem 'Produto adquirido'.
+ROTULOS_CURSO: tuple[str, ...] = (
+    # Rótulos explícitos de curso/interesse (prioridade mais alta).
+    "Curso",
+    "Nome do Curso",
+    "Tipo de Curso",
+    "Curso de Interesse",
+    "Interesse",
+    "Area de Interesse",
+    "Formacao de Interesse",
+    "Graduacao de Interesse",
+    # Rótulos de produto (prioridade mais baixa).
+    "Produto",
+    "Nome do Produto",
+    "Produto Primario",
+    "Produto Principal",
+    "Primario (Nome do produto) (Produto)",
+    "Produto de Interesse",
+    "Interesse em Produto",
+)
+
+# Ordem de prioridade documentada para escolher a coluna de curso quando mais de
+# um rótulo CONHECIDO está presente. A prioridade RESOLVE entre rótulos de
+# produto conhecidos — isso NÃO é ambiguidade. Primeiro vêm os rótulos
+# explícitos de curso/interesse; depois os de produto.
+_PRIORIDADE_CURSO: tuple[str, ...] = (
+    # Curso/interesse explícitos
+    "Curso",
+    "Nome do Curso",
+    "Tipo de Curso",
+    "Curso de Interesse",
+    "Interesse",
+    "Formacao de Interesse",
+    "Graduacao de Interesse",
+    "Area de Interesse",
+    # Produto
+    "Nome do Produto",
+    "Produto Primario",
+    "Produto Principal",
+    "Primario (Nome do produto) (Produto)",
+    "Produto",
+    "Produto de Interesse",
+    "Interesse em Produto",
+)
+
+# Categorias de curso/interesse CLARAMENTE DISTINTAS. Duas (ou mais) dessas
+# categorias presentes como colunas separadas caracterizam ambiguidade que
+# INTERROMPE (ex.: 'Curso' E 'Curso de Interesse'). Rótulos de produto não
+# entram nesta heurística: entre eles a prioridade sempre resolve.
+_CATEGORIAS_CURSO_DISTINTAS: tuple[str, ...] = (
+    "Curso",
+    "Nome do Curso",
+    "Tipo de Curso",
+    "Curso de Interesse",
+    "Interesse",
+    "Formacao de Interesse",
+    "Graduacao de Interesse",
+    "Area de Interesse",
+)
+
+_CURSO_NORMALIZADO = frozenset(normalizar_rotulo(r) for r in ROTULOS_CURSO)
+
+
+def localizar_coluna_curso(colunas: object) -> str | None:
+    """Retorna o nome ORIGINAL da coluna reconhecida como curso, ou ``None``.
+
+    Reconhecimento tolerante (caixa/acento/espaços) via ``normalizar_rotulo``
+    sobre a lista controlada ``ROTULOS_CURSO``.
+
+    ORDEM DE PRIORIDADE (documentada em ``_PRIORIDADE_CURSO``): rótulos
+    explícitos de curso/interesse primeiro — Curso → Nome do Curso → Tipo de
+    Curso → Curso de Interesse → Interesse → Formação de Interesse → Graduação
+    de Interesse → Área de Interesse — e depois os de produto — Nome do Produto
+    → Produto Primário → Produto Principal → 'Primário (Nome do produto)
+    (Produto)' → Produto → Produto de Interesse → Interesse em Produto. A
+    prioridade RESOLVE entre rótulos de produto conhecidos (não é ambiguidade).
+    """
+    # Mapeia rótulo normalizado -> nome original (primeira ocorrência mantém a
+    # ordem de entrada das colunas).
+    presentes: dict[str, str] = {}
+    for coluna in colunas:
+        chave = normalizar_rotulo(coluna)
+        if chave in _CURSO_NORMALIZADO and chave not in presentes:
+            presentes[chave] = str(coluna).strip()
+
+    for rotulo in _PRIORIDADE_CURSO:
+        chave = normalizar_rotulo(rotulo)
+        if chave in presentes:
+            return presentes[chave]
+    return None
+
+
+class ResultadoColunaCurso(NamedTuple):
+    """Resultado estruturado da análise da coluna de curso.
+
+    - ``coluna``: nome original escolhido, ou ``None`` quando não há coluna de
+      curso ou quando a análise é ambígua.
+    - ``candidatas``: colunas conflitantes (quando ambígua) para o chamador
+      decidir; vazia quando não há ambiguidade.
+    - ``ambigua``: ``True`` quando há 2+ categorias claramente distintas de
+      curso/interesse presentes como colunas separadas.
+    """
+
+    coluna: str | None
+    candidatas: list[str]
+    ambigua: bool
+
+
+def analisar_coluna_curso(colunas: object) -> ResultadoColunaCurso:
+    """Analisa as colunas e indica coluna de curso, candidatas e ambiguidade.
+
+    Heurística conservadora DOCUMENTADA: ter tanto um rótulo de produto quanto
+    outro rótulo de produto NÃO é ambiguidade — a ordem de prioridade resolve.
+    A ambiguidade que INTERROMPE ocorre apenas quando há 2+ candidatas de
+    categorias claramente distintas de curso/interesse presentes como colunas
+    separadas (ex.: 'Curso' E 'Curso de Interesse'). Nesse caso ``ambigua`` é
+    ``True``, ``coluna`` é ``None`` e ``candidatas`` lista as colunas em
+    conflito, na ordem de entrada, para o chamador decidir.
+    """
+    categorias_distintas = frozenset(
+        normalizar_rotulo(r) for r in _CATEGORIAS_CURSO_DISTINTAS
+    )
+
+    # Colunas (nome original) que pertencem às categorias distintas de curso,
+    # preservando a ordem de entrada e evitando duplicar a mesma categoria.
+    conflitantes: list[str] = []
+    categorias_vistas: set[str] = set()
+    for coluna in colunas:
+        chave = normalizar_rotulo(coluna)
+        if chave in categorias_distintas and chave not in categorias_vistas:
+            categorias_vistas.add(chave)
+            conflitantes.append(str(coluna).strip())
+
+    if len(conflitantes) >= 2:
+        return ResultadoColunaCurso(coluna=None, candidatas=conflitantes, ambigua=True)
+
+    return ResultadoColunaCurso(
+        coluna=localizar_coluna_curso(colunas), candidatas=[], ambigua=False
+    )
+
+
+# ---------------------------------------------------------------------------
 # Detecção de formato
 # ---------------------------------------------------------------------------
 def detectar_formato(colunas: object) -> str:
@@ -244,6 +395,9 @@ def adaptar_crm1(df: pd.DataFrame) -> pd.DataFrame:
         CANON_PRODUTO_PRIMARIO: _coluna_texto(df, CRM1_PRODUTO_PRIMARIO),
         # CRM 1 não possui Regional/Unidade → permanece vazio (P3).
     }
+    coluna_curso = localizar_coluna_curso(df.columns)
+    if coluna_curso is not None:
+        dados[CANON_CURSO] = _coluna_texto(df, coluna_curso)
     return _montar_canonico(dados, df.index)
 
 
@@ -311,6 +465,9 @@ def adaptar_crm2(df: pd.DataFrame) -> pd.DataFrame:
         CANON_NOME_PRODUTO: _coluna_texto(df, CRM2_PRODUTO),
         CANON_PRODUTO_PRIMARIO: _coluna_texto(df, CRM2_PRODUTO_PRIMARIO),
     }
+    coluna_curso = localizar_coluna_curso(df.columns)
+    if coluna_curso is not None:
+        dados[CANON_CURSO] = _coluna_texto(df, coluna_curso)
     return _montar_canonico(dados, df.index)
 
 
@@ -341,6 +498,9 @@ def adaptar_generico(df: pd.DataFrame) -> pd.DataFrame:
         dados[CANON_CPF] = _coluna_texto(df, coluna_cpf)
     if coluna_email is not None:
         dados[CANON_EMAIL] = _coluna_texto(df, coluna_email)
+    coluna_curso = localizar_coluna_curso(df.columns)
+    if coluna_curso is not None:
+        dados[CANON_CURSO] = _coluna_texto(df, coluna_curso)
     # Razão do Status, Regional, Produto e Produto Primário ficam vazios.
     return _montar_canonico(dados, df.index)
 

@@ -458,6 +458,114 @@ os CSVs por grupo, a quantidade em SEM_DDD e a localização. Nenhum sucesso é
 exibido antes de concluir a gravação de todos os arquivos; em caso de erro,
 nenhuma mensagem de sucesso é mostrada.
 
+## Separação por curso e DDD (V3.2)
+
+A V3.2 acrescenta uma **terceira** modalidade de saída, sem alterar nenhuma das
+duas anteriores: **"Blip - listas de contatos separadas por curso e DDD"**. Ela
+primeiro separa os contatos por **curso** e, dentro de cada curso, pelos mesmos
+quatro grupos de DDD da V3.1 (DDD_47, DDD_49, DDD_48_E_OUTROS e SEM_DDD).
+
+### Coluna de curso obrigatória (somente nesta modalidade)
+
+A obrigatoriedade da coluna de curso vale **exclusivamente** para esta terceira
+opção. As opções A (planilha completa + números) e B (Blip por DDD) continuam
+funcionando sem exigir curso. Antes de gerar qualquer arquivo, todas as
+planilhas selecionadas são validadas: se **alguma** não tiver uma coluna de
+curso reconhecível ou houver **ambiguidade**, o processamento é interrompido com
+uma única mensagem que lista todas as planilhas problemáticas — e **nenhum**
+arquivo parcial é gravado.
+
+### Rótulos de curso reconhecidos e ordem de prioridade
+
+A coluna de curso é identificada pelo **nome** do cabeçalho (tolerante a
+maiúsculas/minúsculas, acentos e espaços), nunca pelo conteúdo das células. Os
+rótulos conhecidos são avaliados nesta ordem de prioridade — primeiro os rótulos
+explícitos de curso/interesse, depois os de produto:
+
+1. `Curso`
+2. `Nome do Curso`
+3. `Tipo de Curso`
+4. `Curso de Interesse`
+5. `Interesse` / `Formação de Interesse` / `Graduação de Interesse` / `Área de Interesse`
+6. `Nome do Produto`
+7. `Produto Primário`
+8. `Produto Principal`
+9. `Primário (Nome do produto) (Produto)`
+10. `Produto`
+11. `Produto de Interesse` / `Interesse em Produto`
+
+Quando mais de um rótulo **de produto** conhecido está presente, a prioridade
+acima resolve qual usar — isso **não** é ambiguidade. A ambiguidade que
+interrompe ocorre apenas quando há duas ou mais categorias claramente distintas
+de curso/interesse presentes como colunas separadas (por exemplo, `Curso` **e**
+`Curso de Interesse`). Nesse caso a mensagem lista as colunas candidatas
+encontradas.
+
+### Tabela de equivalências e `CURSO_NAO_IDENTIFICADO`
+
+Os nomes de curso passam por uma tabela de equivalências **cadastrada
+manualmente** em `cursos.py` (`EQUIVALENCIAS_CURSO`). A semente inicial unifica
+as três variações de Análise e Desenvolvimento de Sistemas em uma única
+denominação padrão. Nenhuma similaridade é inferida automaticamente: cursos sem
+equivalência cadastrada **preservam o nome original**. Para **estender**,
+acrescente um par `normalizar_rotulo("Nome Variante"): "Denominação Padrão"` ao
+dicionário — nenhuma equivalência adicional é cadastrada sem confirmação.
+
+Um contato cuja célula de curso esteja **vazia** (mesmo com a coluna presente)
+não interrompe o processamento: ele é classificado como
+`CURSO_NAO_IDENTIFICADO`, que também é subdividido pelos quatro grupos de DDD.
+
+### Estrutura de pastas Blip/<Curso>/<DDD>/
+
+```text
+Blip/
+    Analise e Desenvolvimento de Sistemas/
+        DDD_47/
+            Blip_001.csv
+            Blip_Contatos_Revisao.xlsx
+        DDD_49/
+            Blip_001.csv
+            Blip_Contatos_Revisao.xlsx
+    CURSO_NAO_IDENTIFICADO/
+        SEM_DDD/
+            Blip_001.csv
+            Blip_Contatos_Revisao.xlsx
+```
+
+O nome da pasta de cada curso é sanitizado para o Windows e colisões entre
+nomes diferentes são desambiguadas de forma determinística. Uma combinação
+curso+DDD só gera pasta quando tem contatos; a numeração dos CSVs reinicia em
+`Blip_001.csv` por combinação.
+
+### Formato dos CSVs e da planilha de revisão
+
+- Os **CSVs** continuam com **exatamente duas colunas** (`Número ou BSUID` e
+  `Nome`), respeitando os mesmos limites (100 contatos e 100 KB reais por
+  arquivo, UTF-8 sem BOM, separador vírgula, `+` preservado). E-mail e curso
+  **não** entram no CSV oficial do Blip.
+- A **planilha de revisão** da V3.2 (`Blip_Contatos_Revisao.xlsx`) tem **quatro
+  colunas**: `Número ou BSUID`, `Nome`, `E-mail` e `Curso`. A coluna de telefone
+  é texto (preservando o `+`) e há autofiltro. E-mail e curso ficam na revisão
+  para conferência manual, mas não são exportados para o CSV.
+
+### Reimportação com autodetecção (2 vs 4 colunas)
+
+O botão **"Gerar CSVs a partir da planilha revisada"** é **único** e detecta o
+formato automaticamente pelos **cabeçalhos** das abas visíveis (não apenas pela
+quantidade de colunas):
+
+- `Número ou BSUID, Nome` → revisão antiga (V3.1), reclassificada apenas por DDD.
+- `Número ou BSUID, Nome, E-mail, Curso` → revisão nova (V3.2), reclassificada
+  por curso **e** DDD.
+
+As revisões antigas de duas colunas continuam funcionando normalmente. Em cada
+reimportação v3.2, o curso é repadronizado (curso apagado →
+`CURSO_NAO_IDENTIFICADO`) e o DDD é reclassificado pelo telefone atual (telefone
+alterado muda a pasta de DDD; inidentificável → `SEM_DDD`). Os arquivos de
+revisão originais **não são modificados**. O resumo informa, além dos totais por
+curso e por DDD, quantos contatos mudaram de curso, mudaram de DDD, foram para
+`CURSO_NAO_IDENTIFICADO` e foram para `SEM_DDD`.
+
 ## Histórico de versões
 
 - **V1 — concluída:** processamento inicial.
@@ -480,3 +588,16 @@ nenhuma mensagem de sucesso é mostrada.
   reimportação de múltiplas planilhas de revisão com reclassificação pelo
   telefone atual e contador de contatos que mudaram de grupo. Os originais de
   revisão não são modificados e os fluxos V1/V2/V3 permanecem inalterados.
+- **V3.2 (separação por curso e DDD) — concluída:** terceira modalidade de saída
+  "Blip - listas de contatos separadas por curso e DDD", que separa por curso e,
+  dentro de cada curso, pelos quatro grupos de DDD. Coluna de curso **obrigatória
+  apenas nesta modalidade**, com validação prévia que interrompe sem gerar
+  parciais em caso de ausência ou ambiguidade. Reconhecimento tolerante da coluna
+  de curso por ordem de prioridade (curso/interesse antes de produto), tabela de
+  equivalências cadastrada manualmente (semente ADS, extensível) com preservação
+  do nome original quando não há equivalência, marcador `CURSO_NAO_IDENTIFICADO`,
+  estrutura `Blip/<Curso>/<DDD>/`, CSV mantido em duas colunas e planilha de
+  revisão de quatro colunas (`Número ou BSUID`, `Nome`, `E-mail`, `Curso`). O
+  botão de reimportação é único e autodetecta revisões de 2 colunas (V3.1) e de
+  4 colunas (V3.2) pelos cabeçalhos. As duas modalidades anteriores e os fluxos
+  V1/V2/V3/V3.1 permanecem inalterados.

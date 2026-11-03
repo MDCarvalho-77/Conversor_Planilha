@@ -170,5 +170,111 @@ class TestTextoSucessoBlipRevisaoDDD(unittest.TestCase):
         self.assertIn("—", texto)
 
 
+class TestTextoSucessoBlipPreparacaoCursoDDD(unittest.TestCase):
+    def test_contem_total_cursos_ddd_nao_identificado_e_pasta(self) -> None:
+        resumo = {
+            "total_contatos": 300,
+            "contatos_exportados": 300,
+            "total_cursos_identificados": 2,
+            "total_curso_nao_identificado": 20,
+            "total_csvs": 6,
+            "lotes": 6,
+            "pasta_raiz": Path(r"C:\saida\Blip"),
+            "contatos_por_curso": {
+                "Análise e Desenvolvimento de Sistemas": 180,
+                "Logística": 100,
+                "CURSO_NAO_IDENTIFICADO": 20,
+            },
+            "contatos_por_ddd": {
+                "DDD_47": 120,
+                "DDD_49": 90,
+                "DDD_48_E_OUTROS": 80,
+                "SEM_DDD": 10,
+            },
+        }
+        texto = app.ConversorPlanilhasApp._texto_sucesso_blip_preparacao_curso_ddd(resumo)
+        self.assertIn(
+            "Preparação para o Blip (curso e DDD) concluída com sucesso!", texto
+        )
+        self.assertIn("300", texto)  # total de contatos
+        self.assertIn("Análise e Desenvolvimento de Sistemas", texto)
+        self.assertIn("Logística", texto)
+        self.assertIn("CURSO_NAO_IDENTIFICADO", texto)
+        self.assertIn("20", texto)  # curso não identificado
+        self.assertIn("DDD_47", texto)
+        self.assertIn("DDD_49", texto)
+        self.assertIn("DDD_48_E_OUTROS", texto)
+        self.assertIn("SEM_DDD", texto)
+        self.assertIn("contato(s)", texto)
+        self.assertIn("C:\\saida\\Blip", texto)  # pasta raiz Blip
+
+    def test_sem_pasta_nao_lanca(self) -> None:
+        resumo = {
+            "total_contatos": 0,
+            "contatos_exportados": 0,
+            "total_cursos_identificados": 0,
+            "total_curso_nao_identificado": 0,
+            "total_csvs": 0,
+            "contatos_por_curso": {},
+            "contatos_por_ddd": {},
+        }
+        texto = app.ConversorPlanilhasApp._texto_sucesso_blip_preparacao_curso_ddd(resumo)
+        self.assertIn(
+            "Preparação para o Blip (curso e DDD) concluída com sucesso!", texto
+        )
+        self.assertIn("—", texto)
+
+
+class TestTextoSucessoBlipRevisaoCursoDDD(unittest.TestCase):
+    def test_contem_mudancas_curso_ddd_e_pasta(self) -> None:
+        resumo = {
+            "contatos_exportados": 150,
+            "mudaram_de_curso": 9,
+            "mudaram_de_ddd": 5,
+            "foram_para_curso_nao_identificado": 3,
+            "foram_para_sem_ddd": 2,
+            "total_csvs": 4,
+            "lotes": 4,
+            "pasta_raiz": Path(r"C:\final\Blip"),
+            "contatos_por_curso": {
+                "Análise e Desenvolvimento de Sistemas": 150,
+            },
+            "contatos_por_ddd": {
+                "DDD_47": 60,
+                "DDD_49": 40,
+                "DDD_48_E_OUTROS": 48,
+                "SEM_DDD": 2,
+            },
+        }
+        texto = app.ConversorPlanilhasApp._texto_sucesso_blip_revisao_curso_ddd(resumo)
+        self.assertIn("CSVs finais por curso e DDD gerados com sucesso!", texto)
+        self.assertNotIn(
+            "Preparação para o Blip (curso e DDD) concluída com sucesso!", texto
+        )
+        self.assertIn("150", texto)  # total exportado
+        self.assertIn("Mudaram de curso: 9", texto)
+        self.assertIn("Mudaram de DDD: 5", texto)
+        self.assertIn("Foram p/ CURSO_NAO_IDENTIFICADO: 3", texto)
+        self.assertIn("Foram p/ SEM_DDD: 2", texto)
+        self.assertIn("Análise e Desenvolvimento de Sistemas", texto)
+        self.assertIn("DDD_47", texto)
+        self.assertIn("C:\\final\\Blip", texto)
+
+    def test_sem_metricas_usa_zero(self) -> None:
+        resumo = {
+            "contatos_exportados": 0,
+            "total_csvs": 0,
+            "contatos_por_curso": {},
+            "contatos_por_ddd": {},
+        }
+        texto = app.ConversorPlanilhasApp._texto_sucesso_blip_revisao_curso_ddd(resumo)
+        self.assertIn("CSVs finais por curso e DDD gerados com sucesso!", texto)
+        self.assertIn("Mudaram de curso: 0", texto)
+        self.assertIn("Mudaram de DDD: 0", texto)
+        self.assertIn("Foram p/ CURSO_NAO_IDENTIFICADO: 0", texto)
+        self.assertIn("Foram p/ SEM_DDD: 0", texto)
+        self.assertIn("—", texto)
+
+
 if __name__ == "__main__":
     unittest.main()

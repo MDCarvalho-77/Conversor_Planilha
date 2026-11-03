@@ -294,5 +294,66 @@ class AdaptarGenericoTest(unittest.TestCase):
         self.assertIn(FORMATO_GENERICO, adapters.ADAPTERS)
 
 
+class LocalizarColunaCursoTest(unittest.TestCase):
+    def test_curso_e_ultimo_canonico(self) -> None:
+        self.assertEqual(COLUNAS_CANONICAS[-1], adapters.CANON_CURSO)
+
+    def test_reconhece_rotulos_de_curso_tolerante(self) -> None:
+        for nome in (
+            "Curso",
+            "curso",
+            "CURSO",
+            "  Curso  ",
+            "Nome do Curso",
+            "Tipo de Curso",
+            "Curso de Interesse",
+            "Produto Primário",
+            "Nome do Produto",
+            "Primário (Nome do produto) (Produto)",
+        ):
+            with self.subTest(nome=nome):
+                self.assertEqual(adapters.localizar_coluna_curso([nome]), nome.strip())
+
+    def test_nao_reconhece_valor_nem_codigo_do_produto(self) -> None:
+        self.assertIsNone(
+            adapters.localizar_coluna_curso(["Valor do Produto", "Código do Produto"])
+        )
+
+    def test_nao_reconhece_coluna_arbitraria(self) -> None:
+        self.assertIsNone(adapters.localizar_coluna_curso(["Cliente", "Telefone"]))
+
+    def test_prioridade_curso_sobre_produto(self) -> None:
+        # Ambos presentes: rótulo de curso vence rótulo de produto.
+        self.assertEqual(
+            adapters.localizar_coluna_curso(["Nome do Produto", "Curso"]), "Curso"
+        )
+
+    def test_prioridade_entre_produtos_nao_e_ambiguidade(self) -> None:
+        # Dois rótulos de produto conhecidos: a prioridade resolve sem erro.
+        resultado = adapters.analisar_coluna_curso(["Produto", "Nome do Produto"])
+        self.assertFalse(resultado.ambigua)
+        self.assertEqual(resultado.coluna, "Nome do Produto")
+
+
+class AnalisarColunaCursoTest(unittest.TestCase):
+    def test_ausencia_de_curso(self) -> None:
+        resultado = adapters.analisar_coluna_curso(["Cliente", "Telefone"])
+        self.assertIsNone(resultado.coluna)
+        self.assertFalse(resultado.ambigua)
+        self.assertEqual(resultado.candidatas, [])
+
+    def test_coluna_unica_de_curso(self) -> None:
+        resultado = adapters.analisar_coluna_curso(["Nome", "Curso", "Telefone"])
+        self.assertEqual(resultado.coluna, "Curso")
+        self.assertFalse(resultado.ambigua)
+        self.assertEqual(resultado.candidatas, [])
+
+    def test_ambiguidade_entre_categorias_distintas(self) -> None:
+        resultado = adapters.analisar_coluna_curso(["Curso", "Curso de Interesse"])
+        self.assertTrue(resultado.ambigua)
+        self.assertIsNone(resultado.coluna)
+        self.assertEqual(resultado.candidatas, ["Curso", "Curso de Interesse"])
+
+
 if __name__ == "__main__":
     unittest.main()
