@@ -276,5 +276,75 @@ class TestTextoSucessoBlipRevisaoCursoDDD(unittest.TestCase):
         self.assertIn("—", texto)
 
 
+class TestTextoSucessoUnificar(unittest.TestCase):
+    def test_contem_total_lido_unico_grupos_sem_ddd_invalidos_e_pasta(self) -> None:
+        resumo = {
+            "total_lido": 500,
+            "total_unico": 420,
+            "por_grupo": {
+                "DDD_47": 150,
+                "DDD_49": 120,
+                "DDD_48_E_OUTROS": 140,
+                "SEM_DDD": 10,
+            },
+            "total_sem_ddd": 10,
+            "total_invalidos": 8,
+            "invalidos": [
+                {
+                    "valor_original": "sem numeros",
+                    "arquivo": "a.csv",
+                    "linha": 3,
+                    "motivo": "Telefone inválido ou não classificável.",
+                }
+            ],
+            "relatorio_invalidos": Path(
+                r"C:\saida\LISTA_UNIFICADA\_telefones_invalidos.csv"
+            ),
+            "pasta_raiz": Path(r"C:\saida\LISTA_UNIFICADA"),
+        }
+        texto = app.ConversorPlanilhasApp._texto_sucesso_unificar(resumo)
+        self.assertIn("Lista unificada gerada com sucesso!", texto)
+        self.assertIn("500", texto)  # total lido
+        self.assertIn("420", texto)  # total único
+        self.assertIn("DDD_47", texto)
+        self.assertIn("DDD_49", texto)
+        self.assertIn("DDD_48_E_OUTROS", texto)
+        self.assertIn("SEM_DDD", texto)
+        self.assertIn("8", texto)  # inválidos
+        self.assertIn("relatório", texto.lower())
+        # O caminho REAL do relatório é apontado, não um "relatório no resumo".
+        self.assertIn("_telefones_invalidos.csv", texto)
+        # Os registros identificados aparecem para conferência direta.
+        self.assertIn("sem numeros", texto)
+        self.assertIn("a.csv", texto)
+        self.assertIn("C:\\saida\\LISTA_UNIFICADA", texto)
+
+    def test_sem_pasta_nao_lanca(self) -> None:
+        resumo = {
+            "total_lido": 0,
+            "total_unico": 0,
+            "por_grupo": {},
+            "total_sem_ddd": 0,
+            "total_invalidos": 0,
+        }
+        texto = app.ConversorPlanilhasApp._texto_sucesso_unificar(resumo)
+        self.assertIn("Lista unificada gerada com sucesso!", texto)
+        self.assertIn("—", texto)
+
+
+class TestMensagemAmigavelTelefoneColunaError(unittest.TestCase):
+    def test_retorna_a_propria_mensagem(self) -> None:
+        import unificar
+
+        mensagem = (
+            "Não foi possível identificar a coluna de telefone nos arquivos a seguir:\n"
+            "- planilha.xlsx: nenhuma coluna de telefone reconhecível"
+        )
+        erro = unificar.TelefoneColunaError(mensagem)
+        self.assertEqual(
+            app.ConversorPlanilhasApp._mensagem_amigavel(erro), mensagem
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

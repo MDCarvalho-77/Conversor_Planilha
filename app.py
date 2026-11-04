@@ -49,6 +49,9 @@ from blip import (
     gerar_csvs_por_curso_e_ddd_de_revisao,
     gerar_csvs_por_ddd_de_revisao,
 )
+import tutorial
+import unificar
+from unificar import SobrescritaError, TelefoneColunaError
 
 
 MENSAGEM_ARQUIVO_INCOMPATIVEL = (
@@ -91,6 +94,7 @@ FORMATOS_CLASSICOS = (
 OPCAO_COMPLETA_NUMEROS = "Planilha completa + números convertidos"
 OPCAO_BLIP_DDD = "Blip — listas de contatos (separadas por DDD)"
 OPCAO_BLIP_CURSO_DDD = "Blip - listas de contatos separadas por curso e DDD"
+OPCAO_UNIFICAR_TELEFONES = "Unificar lista - Somente telefones"
 
 
 def _colunas_visiveis(caminho: Path) -> set[str]:
@@ -153,11 +157,36 @@ class ConversorPlanilhasApp(ctk.CTk):
         self._criar_area_revisao_blip()
         self._criar_area_resultado()
 
+        # Abertura automática do tutorial no 1º acesso (V3.3). À prova de falha:
+        # qualquer erro de preferência/Tk é silenciado para não impedir a janela
+        # principal de abrir. O agendamento via after garante que a janela já
+        # esteja montada antes de exibir o tutorial.
+        try:
+            if tutorial.deve_mostrar_tutorial():
+                self.after(300, self._abrir_tutorial)
+        except Exception:
+            pass
+
     def _criar_cabecalho(self) -> None:
         """Monta a identificação institucional do aplicativo."""
         cabecalho = ctk.CTkFrame(self, fg_color="transparent")
         cabecalho.grid(row=0, column=0, sticky="ew")
         cabecalho.grid_columnconfigure(0, weight=1)
+        # Botão "Ajuda / Tutorial" no canto superior direito (V3.3). À prova de
+        # falha: nunca deixa a abertura do tutorial derrubar a janela principal.
+        self.botao_tutorial = ctk.CTkButton(
+            cabecalho,
+            text="Ajuda / Tutorial",
+            command=self._abrir_tutorial,
+            width=140,
+            fg_color="transparent",
+            border_width=1,
+            border_color=AZUL_PRINCIPAL,
+            text_color=(AZUL_DESTAQUE, "#54B7ED"),
+            hover_color=("#D9EAF5", "#253B49"),
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self.botao_tutorial.grid(row=0, column=0, sticky="ne", padx=18, pady=(18, 0))
         self.logo_original = Image.open(CAMINHO_LOGOMARCA)
         self.logo_exibicao = ctk.CTkImage(
             light_image=self.logo_original,
@@ -217,6 +246,12 @@ class ConversorPlanilhasApp(ctk.CTk):
                 OPCAO_BLIP_CURSO_DDD,
                 "Separa por curso e, dentro de cada curso, por grupo de DDD. "
                 "A COLUNA DE CURSO É OBRIGATÓRIA em todas as planilhas.",
+            ),
+            (
+                OPCAO_UNIFICAR_TELEFONES,
+                "Aceita CSV e Excel, SEM limite de 7 arquivos. Reúne os "
+                "telefones de todas as planilhas em listas de números únicos "
+                "por grupo de DDD.",
             ),
         )
         for indice, (formato, descricao) in enumerate(opcoes):
@@ -349,15 +384,37 @@ class ConversorPlanilhasApp(ctk.CTk):
         return area
 
     def selecionar_arquivo(self) -> None:
-        """Seleciona uma ou mais planilhas e remove resultados anteriores."""
-        caminhos = filedialog.askopenfilenames(
-            title="Selecionar planilhas do CRM", filetypes=[("Planilhas Excel", "*.xlsx")]
-        )
-        if not caminhos:
-            return
-        if len(caminhos) > LIMITE_ARQUIVOS:
-            messagebox.showwarning("Limite de arquivos", MENSAGEM_LIMITE_ARQUIVOS, parent=self)
-            return
+        """Seleciona uma ou mais planilhas e remove resultados anteriores.
+
+        A seleção é ramificada conforme a modalidade marcada: a 4ª modalidade
+        (``OPCAO_UNIFICAR_TELEFONES``) aceita ``.csv`` e ``.xlsx`` e NÃO aplica
+        o ``LIMITE_ARQUIVOS``; as demais modalidades mantêm o caminho clássico
+        (somente ``.xlsx`` e limite de 7 arquivos), sem qualquer alteração.
+        """
+        if self.formato_saida.get() == OPCAO_UNIFICAR_TELEFONES:
+            caminhos = filedialog.askopenfilenames(
+                title="Selecionar arquivos (.csv ou .xlsx) para unificar",
+                filetypes=[
+                    ("Planilhas e CSV", "*.csv *.xlsx"),
+                    ("CSV", "*.csv"),
+                    ("Planilhas Excel", "*.xlsx"),
+                ],
+            )
+            if not caminhos:
+                return
+            # SEM limite de 7 arquivos nesta modalidade (requisito V3.3).
+        else:
+            caminhos = filedialog.askopenfilenames(
+                title="Selecionar planilhas do CRM",
+                filetypes=[("Planilhas Excel", "*.xlsx")],
+            )
+            if not caminhos:
+                return
+            if len(caminhos) > LIMITE_ARQUIVOS:
+                messagebox.showwarning(
+                    "Limite de arquivos", MENSAGEM_LIMITE_ARQUIVOS, parent=self
+                )
+                return
 
         self.caminhos_entrada = [Path(caminho) for caminho in caminhos]
         self.pasta_saida = None
@@ -387,15 +444,25 @@ class ConversorPlanilhasApp(ctk.CTk):
             self._operacao_atual = "blip_preparacao"
         elif formato == OPCAO_BLIP_CURSO_DDD:
             self._operacao_atual = "blip_curso_ddd_preparacao"
+        elif formato == OPCAO_UNIFICAR_TELEFONES:
+            self._operacao_atual = "unificar"
         else:
             self._operacao_atual = "padrao"
 
-        # No modo Blip (por DDD ou por curso+DDD), a pasta de saída é escolhida
-        # pelo usuário (na thread principal) antes do processamento pesado.
+        # No modo Blip (por DDD ou por curso+DDD) e no modo Unificar, a pasta de
+        # saída é escolhida pelo usuário (na thread principal) antes do
+        # processamento pesado.
         pasta_blip: Path | None = None
         if formato in (OPCAO_BLIP_DDD, OPCAO_BLIP_CURSO_DDD):
             escolha = filedialog.askdirectory(
                 title="Escolha a pasta de saída para os arquivos do Blip"
+            )
+            if not escolha:
+                return
+            pasta_blip = Path(escolha)
+        elif formato == OPCAO_UNIFICAR_TELEFONES:
+            escolha = filedialog.askdirectory(
+                title="Escolha a pasta de saída para a lista unificada"
             )
             if not escolha:
                 return
@@ -438,12 +505,70 @@ class ConversorPlanilhasApp(ctk.CTk):
             elif formato == OPCAO_BLIP_CURSO_DDD:
                 assert pasta_blip is not None
                 resultado = gerar_blip_por_curso_e_ddd_de_planilhas(caminhos, pasta_blip)
+            elif formato == OPCAO_UNIFICAR_TELEFONES:
+                assert pasta_blip is not None
+                self._executar_unificar(caminhos, pasta_blip, sobrescrever=False)
+                return
             else:
                 resultado = gerar_saidas_v2(caminhos, FORMATO_AMBAS_SAIDAS)
         except Exception as erro:
             self.after(0, self._concluir_processamento, None, erro)
         else:
             self.after(0, self._concluir_processamento, resultado, None)
+
+    def _executar_unificar(
+        self, caminhos: list[Path], pasta: Path, sobrescrever: bool
+    ) -> None:
+        """Worker do modo Unificar: valida ANTES de gravar e trata conflitos.
+
+        Chama :func:`unificar.validar_fontes` antes de qualquer gravação (em
+        erro, encaminha a exceção para ``_concluir_processamento`` sem gerar
+        saída parcial) e, em seguida, :func:`unificar.unificar_telefones`. Um
+        conflito de anti-sobrescrita (:class:`unificar.SobrescritaError`) NÃO é
+        tratado como erro final: é encaminhado à thread principal para
+        confirmação explícita via ``askyesno``.
+        """
+        try:
+            unificar.validar_fontes(caminhos)
+            resumo = unificar.unificar_telefones(
+                caminhos, pasta, sobrescrever=sobrescrever
+            )
+        except SobrescritaError as conflito:
+            self.after(0, self._resolver_sobrescrita_unificar, caminhos, pasta, conflito)
+        except Exception as erro:
+            self.after(0, self._concluir_processamento, None, erro)
+        else:
+            self.after(0, self._concluir_processamento, resumo, None)
+
+    def _resolver_sobrescrita_unificar(
+        self, caminhos: list[Path], pasta: Path, conflito: SobrescritaError
+    ) -> None:
+        """Na thread principal: pergunta se pode sobrescrever a lista existente.
+
+        Nunca sobrescreve sem autorização explícita. Se o usuário confirmar
+        (``SIM``), reexecuta o worker com ``sobrescrever=True``; se recusar
+        (``NÃO``), reabilita a interface e orienta a escolher outra pasta.
+        """
+        autorizar = messagebox.askyesno(
+            "Arquivos já existentes",
+            f"{conflito}\n\nDeseja substituir os arquivos existentes?",
+            parent=self,
+        )
+        if autorizar:
+            Thread(
+                target=self._executar_unificar,
+                args=(caminhos, pasta, True),
+                daemon=True,
+            ).start()
+            return
+        self._reabilitar_interface()
+        self.status.configure(
+            text=(
+                "Nenhum arquivo foi sobrescrito. Escolha outra pasta de saída "
+                "e processe novamente."
+            ),
+            text_color=TEXTO_SECUNDARIO,
+        )
 
     def _reabilitar_interface(self) -> None:
         """Reabilita os controles após o término do worker."""
@@ -476,6 +601,8 @@ class ConversorPlanilhasApp(ctk.CTk):
             self._mostrar_resultado_blip_curso_ddd(resultado, revisao=False)
         elif self._operacao_atual == "blip_curso_ddd_revisao":
             self._mostrar_resultado_blip_curso_ddd(resultado, revisao=True)
+        elif self._operacao_atual == "unificar":
+            self._mostrar_resultado_unificar(resultado)
         else:
             self._mostrar_resultado_padrao(resultado)
 
@@ -609,6 +736,46 @@ class ConversorPlanilhasApp(ctk.CTk):
             texto = self._texto_sucesso_blip_preparacao_curso_ddd(resumo)
         self.status.configure(text=status_texto, text_color=VERDE_SUCESSO)
         messagebox.showinfo(titulo, texto, parent=self)
+
+    def _mostrar_resultado_unificar(self, resumo: dict[str, object]) -> None:
+        """Exibe o resumo do modo Unificar (telefones únicos por grupo de DDD).
+
+        Atualiza a área de resultado somente na thread principal, aponta
+        ``self.pasta_saida`` para ``LISTA_UNIFICADA``, habilita ABRIR PASTA, põe
+        o status verde de sucesso e mostra o ``messagebox``. Nunca é chamado
+        antes de toda a gravação concluir.
+        """
+        por_grupo = resumo.get("por_grupo", {})
+        linhas = [
+            f"Total de telefones lidos: {resumo.get('total_lido', '—')}",
+            f"Telefones únicos (após deduplicação): {resumo.get('total_unico', '—')}",
+        ]
+        if isinstance(por_grupo, dict):
+            for grupo in GRUPOS_DDD:
+                linhas.append(f"{grupo}: {por_grupo.get(grupo, 0)} telefone(s)")
+        total_invalidos = resumo.get("total_invalidos", 0)
+        linhas.append(f"Telefones inválidos (não descartados em silêncio): {total_invalidos}")
+        if total_invalidos:
+            relatorio = resumo.get("relatorio_invalidos")
+            if relatorio is not None:
+                linhas.append(f"Relatório de inválidos: {Path(relatorio)}")  # type: ignore[arg-type]
+            linhas.extend(
+                ConversorPlanilhasApp._linhas_invalidos_unificar(resumo)
+            )
+
+        pasta_raiz = resumo.get("pasta_raiz")
+        if pasta_raiz is not None:
+            linhas.append(f"Pasta: {Path(pasta_raiz)}")  # type: ignore[arg-type]
+
+        self.arquivos_gerados.configure(text="\n".join(linhas))
+        if pasta_raiz is not None:
+            self.pasta_saida = Path(pasta_raiz)  # type: ignore[arg-type]
+            self.botao_abrir_pasta.configure(state="normal")
+        self.status.configure(
+            text="Lista unificada gerada com sucesso!", text_color=VERDE_SUCESSO
+        )
+        texto = self._texto_sucesso_unificar(resumo)
+        messagebox.showinfo("Lista unificada gerada", texto, parent=self)
 
     def gerar_csvs_revisados(self) -> None:
         """Gera os CSVs definitivos a partir de um Excel de revisão editado."""
@@ -822,6 +989,70 @@ class ConversorPlanilhasApp(ctk.CTk):
             f"Pasta Blip: {pasta_texto}"
         )
 
+    #: Quantos registros inválidos listar diretamente na UI antes de truncar.
+    MAX_INVALIDOS_EXIBIDOS = 10
+
+    @staticmethod
+    def _linhas_invalidos_unificar(resumo: dict[str, object]) -> list[str]:
+        """Monta as linhas itemizadas dos telefones inválidos (puro).
+
+        Lista até :data:`MAX_INVALIDOS_EXIBIDOS` registros com valor original,
+        arquivo e linha, para conferência direta na janela; se houver mais,
+        indica o truncamento e aponta que o relatório completo está no CSV.
+        """
+        invalidos = resumo.get("invalidos", [])
+        if not isinstance(invalidos, list) or not invalidos:
+            return []
+        limite = ConversorPlanilhasApp.MAX_INVALIDOS_EXIBIDOS
+        linhas = ["Registros inválidos para conferência:"]
+        for registro in invalidos[:limite]:
+            if not isinstance(registro, dict):
+                continue
+            valor = registro.get("valor_original", "—")
+            arquivo = registro.get("arquivo", "—")
+            linha = registro.get("linha", "—")
+            linhas.append(f"  • '{valor}' — {arquivo}, linha {linha}")
+        restantes = len(invalidos) - limite
+        if restantes > 0:
+            linhas.append(
+                f"  … e mais {restantes} (lista completa no relatório CSV)."
+            )
+        return linhas
+
+    @staticmethod
+    def _texto_sucesso_unificar(resumo: dict[str, object]) -> str:
+        """Monta o texto de sucesso do modo Unificar (puro, sem widgets).
+
+        Reporta total lido, total único (pós-dedup), a quantidade por grupo de
+        DDD, SEM_DDD, o total de telefones inválidos (com o caminho real do
+        relatório CSV e os primeiros registros itemizados) e a pasta de saída.
+        """
+        pasta_raiz = resumo.get("pasta_raiz")
+        pasta_texto = str(Path(pasta_raiz)) if pasta_raiz is not None else "—"  # type: ignore[arg-type]
+        por_grupo = resumo.get("por_grupo", {})
+        linhas_grupos: list[str] = []
+        if isinstance(por_grupo, dict):
+            for grupo in GRUPOS_DDD:
+                linhas_grupos.append(f"{grupo}: {por_grupo.get(grupo, 0)} telefone(s)")
+        total_invalidos = resumo.get("total_invalidos", 0)
+        texto = (
+            "Lista unificada gerada com sucesso!\n"
+            f"Total de telefones lidos: {resumo.get('total_lido', '—')}\n"
+            f"Telefones únicos (após deduplicação): {resumo.get('total_unico', '—')}\n"
+            + "\n".join(linhas_grupos)
+            + f"\nSEM_DDD: {resumo.get('total_sem_ddd', 0)}\n"
+            f"Telefones inválidos (não descartados em silêncio): {total_invalidos}"
+        )
+        if total_invalidos:
+            relatorio = resumo.get("relatorio_invalidos")
+            if relatorio is not None:
+                texto += f"\nRelatório de inválidos: {Path(relatorio)}"  # type: ignore[arg-type]
+            linhas_invalidos = ConversorPlanilhasApp._linhas_invalidos_unificar(resumo)
+            if linhas_invalidos:
+                texto += "\n" + "\n".join(linhas_invalidos)
+        texto += f"\nPasta: {pasta_texto}"
+        return texto
+
     @staticmethod
     def _mensagem_amigavel(erro: Exception) -> str:
         if isinstance(erro, LimiteArquivosExcedidoError):
@@ -830,11 +1061,25 @@ class ConversorPlanilhasApp(ctk.CTk):
             return MENSAGEM_SEM_TELEFONE
         if isinstance(erro, BlipError):
             return str(erro)
+        if isinstance(erro, TelefoneColunaError):
+            return str(erro)
         if isinstance(erro, PermissionError):
             return "Não foi possível salvar o arquivo. Feche-o no Excel e tente novamente."
         if isinstance(erro, FileNotFoundError):
             return "Arquivo não encontrado. Selecione-o novamente e tente outra vez."
         return MENSAGEM_ARQUIVO_INCOMPATIVEL
+
+    def _abrir_tutorial(self) -> None:
+        """Abre a janela do tutorial à prova de falha (passando self como master).
+
+        Usado tanto pelo botão "Ajuda / Tutorial" quanto pela abertura
+        automática no 1º acesso. Qualquer falha ao instanciar a janela é
+        silenciada para nunca derrubar a aplicação principal.
+        """
+        try:
+            tutorial.abrir_tutorial(self)
+        except Exception:
+            pass
 
     def abrir_pasta(self) -> None:
         """Abre no Explorador do Windows a pasta da última saída."""

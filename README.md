@@ -566,6 +566,106 @@ revisão originais **não são modificados**. O resumo informa, além dos totais
 curso e por DDD, quantos contatos mudaram de curso, mudaram de DDD, foram para
 `CURSO_NAO_IDENTIFICADO` e foram para `SEM_DDD`.
 
+## Unificação de telefones (V3.3)
+
+A V3.3 acrescenta uma **quarta** modalidade de saída — **"Unificar lista -
+Somente telefones"** — sem alterar nenhuma das três anteriores. Ela reúne os
+telefones de várias listas em uma única lista deduplicada, classificada pelos
+mesmos quatro grupos de DDD das versões anteriores.
+
+### Entradas aceitas e a diferença no limite de 7
+
+- A modalidade aceita arquivos **CSV** e **Excel** (`.xlsx`).
+- **Esta modalidade NÃO tem o limite de 7 arquivos.** É possível selecionar
+  quantos arquivos forem necessários em uma única execução.
+- As demais modalidades (planilha completa + números, Blip por DDD e Blip por
+  curso e DDD) **mantêm o limite de até 7 arquivos** já existente. A diferença
+  é deliberada e fica explícita na interface.
+
+### Leitura de CSV
+
+A leitura de CSV tenta, em ordem, os encodings **`utf-8-sig`**, **`utf-8`** e
+**`latin-1`**, e detecta automaticamente o separador do arquivo. O objetivo é
+abrir listas exportadas por ferramentas diferentes sem exigir ajuste manual.
+
+### Reconhecimento da coluna de telefone
+
+A coluna de telefone é identificada por uma **lista controlada de rótulos**,
+comparando apenas o **nome** do cabeçalho (tolerante a maiúsculas/minúsculas,
+acentos e espaços), nunca pelo conteúdo das células. A lista reutiliza os mesmos
+rótulos genéricos de telefone já reconhecidos nas versões anteriores.
+
+### Validação prévia por arquivo (sem saída parcial)
+
+Antes de gerar qualquer arquivo, **todos** os arquivos selecionados são
+validados. Se **algum** não tiver coluna de telefone reconhecível ou houver
+**ambiguidade**, o processamento é interrompido com uma única mensagem que lista
+todos os arquivos problemáticos — e **nenhum** arquivo parcial é gravado.
+
+### Consolidação, dedup global e classificação por DDD
+
+Os telefones de todas as listas são reunidos, **deduplicados globalmente** (dedup
+entre arquivos e dentro do mesmo arquivo) e classificados nos **quatro grupos de
+DDD** (DDD_47, DDD_49, DDD_48_E_OUTROS e SEM_DDD), com a mesma regra conservadora
+das versões anteriores (reutilizando a normalização de telefone e a classificação
+por DDD já existentes).
+
+### Relatório de inválidos (nunca descarte silencioso)
+
+Telefones inválidos ou não classificáveis **não são descartados em silêncio**. O
+resumo apresenta a **quantidade** de registros inválidos/não classificáveis e,
+sempre que possível, **identifica os registros envolvidos** para conferência.
+
+### Saída `LISTA_UNIFICADA/`
+
+A saída é gravada na estrutura `LISTA_UNIFICADA/<GRUPO_DDD>/Lista_Unificada.{xlsx,csv}`:
+
+```text
+LISTA_UNIFICADA/
+    DDD_47/
+        Lista_Unificada.xlsx
+        Lista_Unificada.csv
+    DDD_49/
+        Lista_Unificada.xlsx
+        Lista_Unificada.csv
+    DDD_48_E_OUTROS/
+        Lista_Unificada.xlsx
+        Lista_Unificada.csv
+    SEM_DDD/
+        Lista_Unificada.xlsx
+        Lista_Unificada.csv
+```
+
+Características da saída:
+
+- Cada arquivo tem **uma única coluna** `Telefone`.
+- O `+` inicial do identificador é **preservado**.
+- No Excel, o telefone é gravado **como texto** (sem notação científica).
+- O CSV é gravado em **UTF-8 sem BOM**, separador vírgula.
+- **Não** se aplicam os limites de 100 contatos / 100 KB do Blip: a lista
+  unificada não é fatiada em lotes.
+- Uma subpasta de grupo é criada **somente** quando o grupo tem contatos.
+
+### Anti-sobrescrita com autorização explícita
+
+Nenhum arquivo existente é sobrescrito silenciosamente. Se a saída já existir, o
+aplicativo exibe um **aviso** e permite **escolher outro destino** ou **autorizar
+explicitamente a substituição** antes de gravar.
+
+## Ajuda / Tutorial (V3.3)
+
+A V3.3 adiciona um tutorial de uso acessível diretamente pela interface:
+
+- Um botão **"Ajuda / Tutorial"** fica no **cabeçalho** da interface (não há barra
+  de menu nativa).
+- O tutorial é exibido automaticamente no **primeiro acesso**.
+- Há a opção **"Não mostrar novamente"** e a possibilidade de **reabertura manual**
+  a qualquer momento pelo botão do cabeçalho.
+- A preferência é salva em **`%APPDATA%\ConversorCRM\config.json`**. A gravação e
+  a leitura são **à prova de falhas**: quando `%APPDATA%` não existe, há fallback
+  para o diretório do usuário e nenhuma exceção de entrada/saída é propagada para
+  a interface.
+
 ## Histórico de versões
 
 - **V1 — concluída:** processamento inicial.
@@ -601,3 +701,19 @@ curso e por DDD, quantos contatos mudaram de curso, mudaram de DDD, foram para
   botão de reimportação é único e autodetecta revisões de 2 colunas (V3.1) e de
   4 colunas (V3.2) pelos cabeçalhos. As duas modalidades anteriores e os fluxos
   V1/V2/V3/V3.1 permanecem inalterados.
+- **V3.3 (unificação de telefones + tutorial) — concluída:** quarta modalidade
+  de saída "Unificar lista - Somente telefones", que aceita CSV e Excel, **sem o
+  limite de 7 arquivos** (mantido nas demais modalidades), lê CSV com os
+  encodings `utf-8-sig`/`utf-8`/`latin-1` e detecção de separador, reconhece a
+  coluna de telefone por lista controlada de rótulos (apenas pelo nome), valida
+  previamente cada arquivo interrompendo sem gerar parciais em caso de ausência
+  ou ambiguidade, consolida com deduplicação global e classifica nos quatro
+  grupos de DDD. Telefones inválidos/não classificáveis são reportados com
+  identificação, nunca descartados em silêncio. A saída
+  `LISTA_UNIFICADA/<GRUPO_DDD>/Lista_Unificada.{xlsx,csv}` tem uma única coluna
+  `Telefone`, `+` preservado, Excel como texto e CSV UTF-8 sem BOM, sem os
+  limites de 100 contatos/100 KB, com anti-sobrescrita por autorização explícita.
+  Inclui o botão "Ajuda / Tutorial" no cabeçalho, com exibição no primeiro
+  acesso, opção "Não mostrar novamente" e reabertura manual, salvando a
+  preferência em `%APPDATA%\ConversorCRM\config.json` à prova de falhas. As três
+  modalidades anteriores e os fluxos V1/V2/V3/V3.1/V3.2 permanecem inalterados.

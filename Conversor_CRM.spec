@@ -32,6 +32,8 @@ a = Analysis(
         "pipeline_v2",
         "blip",
         "cursos",
+        "unificar",
+        "tutorial",
     ],
     hookspath=[],
     hooksconfig={},
