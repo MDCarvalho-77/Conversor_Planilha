@@ -1,719 +1,254 @@
-# Conversor CRM
+# Conversor de Planilhas para CRM
 
-Aplicativo desktop para tratar planilhas Excel exportadas do CRM e gerar arquivos prontos para uso. A interface foi pensada para executar o fluxo de forma guiada, sem exigir que o usuário trabalhe com código Python.
+> Aplicação desktop em Python que automatiza o tratamento de planilhas de CRM: lê diferentes formatos, limpa e normaliza os dados de contato e os entrega prontos para uso comercial — sem exigir que o usuário saiba programar.
 
-## Objetivo
+![Python](https://img.shields.io/badge/Python-3.x-blue)
+![Interface](https://img.shields.io/badge/UI-CustomTkinter-informational)
+![Testes](https://img.shields.io/badge/testes-238%20passando-brightgreen)
 
-O Conversor CRM facilita o tratamento de planilhas exportadas do CRM para usuários leigos. Ele concentra regras já validadas para filtragem, deduplicação e normalização de telefones, eliminando a necessidade de executar scripts Python manualmente.
+Transformei uma rotina manual de tratamento de planilhas de CRM em uma aplicação de dados testada, que lê diferentes formatos, limpa e normaliza os contatos e os entrega prontos para campanhas.
 
-## Público-alvo
+---
 
-Usuários que trabalham com planilhas do CRM e precisam gerar uma planilha tratada ou uma lista de telefones sem conhecimento técnico de programação.
+## Demonstração
 
-## Fluxo do processamento
+O vídeo mostra o fluxo completo na interface: seleção das planilhas, escolha do formato de saída e processamento, com as métricas do resultado exibidas ao final. A aplicação foi pensada para uso por pessoas não técnicas, sem contato com código.
 
-Ao processar uma planilha, o aplicativo executa este fluxo, nesta ordem:
+**▶️ [Assistir à demonstração da aplicação](https://drive.google.com/file/d/1U8GxvEW_rDgxBIpWsX5eXQBhO54hYpFu/view?usp=sharing)**
 
-1. Seleciona a planilha Excel de entrada.
-2. Lê somente as abas visíveis.
-3. Ignora abas com estado `hidden` e `veryHidden`.
-4. Normaliza os nomes das colunas, removendo espaços no início e no fim.
-5. Valida a estrutura e as colunas necessárias para cada etapa.
-6. Remove registros sem telefone.
-7. Remove duplicatas integrais.
-8. Normaliza os telefones restantes.
-9. Produz internamente o DataFrame final tratado.
-10. Gera uma ou ambas as saídas conforme o formato escolhido.
+<!--
+Existe também um GIF local de demonstração em `test/Teste-UX.gif` (~8 MB).
+Se quiser usá-lo como preview inline no README, mova-o para `assets/` e
+descomente a linha abaixo. Por ora o link do Drive é a demonstração oficial,
+para não versionar um binário grande no repositório.
 
-## Regras de negócio
+![Demonstração da aplicação](assets/demo.gif)
+-->
 
-### Deduplicação
+---
 
-A deduplicação é feita antes da normalização dos telefones e compara a linha inteira, sem definir subconjunto de colunas. Portanto:
+## Problema
 
-- Somente linhas integralmente idênticas são removidas.
-- Todas as colunas presentes na planilha participam da comparação.
-- `Nome do produto` participa obrigatoriamente.
-- `Primário (Nome do produto) (Produto)` participa obrigatoriamente.
-- Se qualquer informação for diferente, inclusive uma das duas colunas de produto, os registros não são considerados duplicados.
+As listas de contatos exportadas do CRM chegavam em condições muito diferentes entre si, e prepará-las para campanhas era um trabalho manual e repetitivo:
 
-Exemplos:
+- planilhas em **formatos distintos** (mais de um layout de CRM e planilhas genéricas);
+- colunas que precisavam ser **limpas e padronizadas** antes de qualquer uso;
+- **registros sem telefone**, que não servem para contato e precisavam ser descartados;
+- **linhas duplicadas**, dentro de um mesmo arquivo e entre arquivos diferentes;
+- **telefones em padrões variados** (com e sem DDD, com e sem código do país, com máscara);
+- necessidade de **segmentar os contatos por DDD** (três números de WhatsApp operacionais) e **por curso**;
+- regras específicas de importação do **Blip**, que exige CSVs com no máximo 100 contatos e 100 KB por arquivo;
+- todo o processo dependia de **tratamento manual**, planilha a planilha, sujeito a erro e difícil de repetir da mesma forma.
 
-- Duas linhas iguais em todas as colunas, inclusive nos produtos, resultam em uma única linha final.
-- Duas linhas iguais, mas com `Nome do produto` diferente, permanecem como dois registros.
-- Duas linhas iguais, mas com `Primário (Nome do produto) (Produto)` diferente, permanecem como dois registros.
+---
 
-### Telefones
+## Solução
 
-O tratamento de telefones segue exatamente estas regras:
+A aplicação centraliza esse fluxo em uma **interface desktop** voltada também para usuários não técnicos. O usuário seleciona as planilhas, escolhe o formato de saída e recebe os arquivos tratados, com métricas de quantos registros foram lidos, descartados sem telefone, deduplicados e entregues no resultado. O processamento roda em segundo plano para manter a interface responsiva.
 
-- Caracteres não numéricos são removidos.
-- Telefones com 10 dígitos recebem o prefixo `55`.
-- Telefones com 11 dígitos recebem o prefixo `55`.
-- Telefones com 12 dígitos são mantidos após a remoção de caracteres não numéricos.
-- Telefones com 13 dígitos são mantidos após a remoção de caracteres não numéricos.
-- Outros tamanhos são mantidos somente com seus dígitos.
-- Registros sem telefone são removidos antes da geração das saídas.
+O mesmo conjunto de regras passa a ser aplicado sempre da mesma forma, de ponta a ponta:
 
-Exemplos: `(48) 99999-0001` torna-se `5548999990001`; um telefone de 13 dígitos já contendo o código do país permanece com os mesmos dígitos.
+```text
+Planilhas → validação → identificação do formato → padronização →
+consolidação → deduplicação → normalização → segmentação → arquivos de saída
+```
 
-## Estrutura esperada da planilha CRM
+---
 
-A planilha deve ser uma exportação compatível do CRM. As colunas relevantes para o processamento são:
+## Funcionalidades principais
 
-- `Razão do Status`
-- `Nome do produto`
-- `Primário (Nome do produto) (Produto)`
-- `CPF_CNPJ`
-- ` Nome Completo`
-- `E-mail`
-- `Telefone da Empresa/Celular`
+**Leitura e identificação**
+- Leitura de diferentes formatos de planilha (Excel e CSV, conforme a modalidade).
+- Identificação do formato pelos **cabeçalhos** das colunas, não pelo conteúdo das células.
+- Suporte a diferentes layouts de CRM e a planilhas genéricas.
+- Leitura apenas das abas **visíveis** (ignora abas `hidden` e `veryHidden`).
 
-Os nomes das colunas têm espaços nas extremidades normalizados pelo processamento. Assim, a coluna de origem ` Nome Completo` é tratada como `Nome Completo` na etapa seguinte e na saída completa.
+**Tratamento de dados**
+- Remoção de registros sem telefone.
+- Deduplicação (integral na V1; global entre arquivos a partir da V2).
+- Normalização de telefones brasileiros (remove máscara, prefixa o código do país quando aplicável).
 
-## Abas ignoradas
+**Segmentação**
+- Classificação por DDD em grupos operacionais (47, 49, 48 e outros, e sem DDD identificável).
+- Segmentação por curso, com tabela de equivalências cadastrada manualmente.
 
-Somente abas com estado `visible` são lidas. Abas `hidden` e `veryHidden` não são tratadas como registros e não participam das métricas, validações, deduplicação ou saídas.
+**Exportação**
+- Geração de planilha completa tratada e de lista de telefones.
+- Geração de listas para o **Blip**, respeitando o limite de **100 contatos e 100 KB** por arquivo (CSV UTF-8 sem BOM).
+- Geração de um **arquivo de revisão** (Excel) para conferência manual antes dos CSVs finais.
+- Unificação de múltiplas listas em uma única lista de telefones deduplicada.
+- Suporte a diferentes codificações de CSV na leitura.
+- **Relatório de inválidos**: registros não classificáveis são reportados, nunca descartados em silêncio.
 
-## Formatos de saída
+**Usabilidade**
+- Interface gráfica (CustomTkinter) para usuários não técnicos.
+- Tutorial integrado, exibido no primeiro acesso e reabrível a qualquer momento.
+- Validação prévia que interrompe o processamento sem gerar arquivos parciais quando uma planilha não atende aos requisitos.
 
-As três opções utilizam o mesmo DataFrame final tratado.
+---
 
-### Planilha completa
+## Arquitetura
 
-Gera `<nome_original>_tratado.xlsx` com as cinco colunas:
+O projeto separa interface, adaptação de formatos e regras de negócio em módulos independentes. A entrada passa por validação, padronização, normalização e segmentação antes da exportação. O diagrama abaixo representa a arquitetura atual:
 
-1. `Razão do Status`
-2. `Nome Completo`
-3. `CPF`
-4. `E-mail`
-5. `Telefone da Empresa/Celular`
+```mermaid
+flowchart TD
+    A[Entrada<br/>planilhas Excel / CSV] --> B{Validação<br/>formato e colunas}
+    B -->|inválido| X[Mensagem de erro<br/>sem gerar arquivos parciais]
+    B -->|válido| C[Detecção do formato<br/>CRM 1 / CRM 2 / genérico]
+    C --> D[Mapeamento para<br/>modelo canônico]
+    D --> E[Consolidação]
+    E --> F[Remoção de registros<br/>sem telefone]
+    F --> G[Deduplicação global]
+    G --> H[Normalização<br/>de telefones]
+    H --> I{Modalidade<br/>de saída}
+    I --> I1[Planilha tratada]
+    I --> I2[Lista de telefones]
+    I --> I3[Blip]
+    I --> I4[Blip por DDD]
+    I --> I5[Blip por curso + DDD]
+    I --> I6[Lista unificada]
+```
 
-### Somente números
+---
 
-Gera `<nome_original>_telefones.xlsx` com uma única coluna:
+## Evolução do projeto
 
-`Telefone`
+O produto evoluiu de forma incremental. Cada versão acrescentou capacidades sem quebrar as anteriores — as regras e saídas antigas permanecem como referência de regressão.
 
-### As duas saídas
+| Versão | O que trouxe |
+|---|---|
+| **V1** | Tratamento básico de planilhas: remoção de registros sem telefone, deduplicação, normalização de telefone e geração dos arquivos iniciais (planilha completa e lista de telefones). |
+| **V2** | Múltiplos arquivos por execução, novos formatos de CRM e planilhas genéricas, **modelo canônico** interno, consolidação e **deduplicação global** entre arquivos, e novos formatos de saída. |
+| **V3** | Integração do fluxo de geração de contatos para o **Blip**: limite de 100 contatos / 100 KB por arquivo, arquivo de revisão intermediário e CSV final a partir da planilha revisada. |
+| **V3.1** | Classificação por **DDD**, grupos de DDD, organização das saídas por DDD e reimportação com reclassificação pelo telefone atual. |
+| **V3.2** | Segmentação por **curso + DDD**, tabela de equivalência de cursos e organização das saídas por curso e DDD. |
+| **V3.3** | **Unificação** de múltiplas listas, exportação em CSV/Excel, suporte a múltiplas codificações, relatório de inválidos e **tutorial** integrado. |
 
-Gera os dois arquivos, `<nome_original>_tratado.xlsx` e `<nome_original>_telefones.xlsx`. Ambos usam o mesmo DataFrame final; não há segundo processamento nem nova deduplicação.
-
-## Interface
-
-Para usar o aplicativo:
-
-1. Clique em **SELECIONAR PLANILHA** e escolha o arquivo exportado do CRM.
-2. Escolha o formato de saída desejado.
-3. Clique em **PROCESSAR PLANILHA**.
-4. Consulte as métricas e os nomes dos arquivos gerados na área **RESULTADO**.
-5. Clique em **ABRIR PASTA** para abrir a pasta que contém os arquivos gerados.
-
-O processamento é executado em segundo plano para manter a interface responsiva. Durante a execução, o botão de processamento fica desabilitado para evitar solicitações duplicadas.
-
-## Métricas
-
-Após o processamento, a interface apresenta:
-
-- **Registros lidos:** quantidade de linhas lidas nas abas visíveis.
-- **Removidos sem telefone:** quantidade de registros descartados por não conterem telefone válido para o filtro inicial.
-- **Duplicados removidos:** quantidade de linhas integrais repetidas removidas após o filtro de telefone.
-- **Registros finais:** quantidade de registros no DataFrame final tratado.
-
-## Arquitetura do projeto
-
-- `app.py`: interface CustomTkinter, validação amigável da estrutura, execução em segundo plano e apresentação de métricas e arquivos.
-- `processamento.py`: regras de leitura, validação, filtro, deduplicação, normalização de telefone e geração das saídas.
-- `test/`: testes de carga com arquivos Excel temporários.
-- `assets/`: recursos visuais da interface, incluindo a logomarca oficial SESI SENAI.
-- `requirements.txt`: dependências Python do projeto.
-- `Conversor_CRM.spec`: configuração PyInstaller preparada para o futuro executável Windows.
-
-Também há `test_processamento.py`, que contém os testes funcionais de regressão das saídas e métricas.
+---
 
 ## Tecnologias
 
-- Python
-- pandas
-- openpyxl
-- CustomTkinter
-- Pillow
-- PyInstaller
+- **Python** — linguagem principal.
+- **pandas** — leitura, limpeza e transformação dos dados.
+- **openpyxl** — leitura e escrita de planilhas Excel.
+- **CustomTkinter** (sobre o `tkinter`) — interface gráfica desktop.
+- **Pillow** — tratamento de imagens da interface.
+- **PyInstaller** — empacotamento para executável Windows, configurado em `Conversor_CRM.spec`. É uma ferramenta de build opcional; não faz parte das dependências de execução em `requirements.txt`, e o executável ainda não foi gerado.
 
-## Desenvolvimento
+---
 
-No Windows PowerShell, a partir da pasta do projeto:
+## Qualidade e testes
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-python app.py
+O projeto tem **238 testes automatizados (`unittest`), todos passando**. A suíte funciona como rede de regressão: mudanças que quebrem as regras de deduplicação, normalização de telefone, classificação por DDD ou os limites de exportação do Blip falham nos testes.
+
+Distribuição por suíte:
+
+| Suíte | Testes | Área coberta |
+|---|---:|---|
+| `test_adapters.py` | 42 | Detecção de formato e mapeamento para o modelo canônico |
+| `test_blip_ddd.py` | 39 | Classificação por DDD e estrutura das saídas |
+| `test_blip.py` | 37 | Requisitos do CSV do Blip (colunas, 100 contatos, 100 KB, UTF-8) |
+| `test_blip_curso_ddd.py` | 34 | Segmentação por curso + DDD e reimportação |
+| `test_unificar.py` | 24 | Unificação de listas, codificações e relatório de inválidos |
+| `test_consolidacao.py` | 15 | Consolidação e deduplicação global |
+| `test_cursos.py` | 15 | Padronização de curso e nomes de pasta |
+| `test_app_feedback.py` | 15 | Mensagens e feedback da interface |
+| `test_tutorial.py` | 14 | Navegação e persistência à prova de falhas das preferências |
+| `test_processamento.py` | 3 | Regressão das saídas e métricas da V1 |
+
+Além da suíte funcional, há um **teste de desempenho** separado (`test/test_desempenho.py`), que mede o tempo de processamento com dados sintéticos (5 mil, 10 mil e 25 mil registros). Os tempos são referência de desenvolvimento, não garantia universal.
+
+Execução:
+
+```bash
+python -m unittest -v
+python test/test_desempenho.py
 ```
 
-Se a política do PowerShell impedir a ativação, execute diretamente o interpretador do ambiente virtual:
+---
+
+## Estrutura do projeto
+
+```text
+Conversor_Planilha/
+├── app.py              # Interface desktop (CustomTkinter): seleção, feedback e métricas
+├── processamento.py    # Núcleo V1: leitura de abas visíveis, dedup e normalização de telefone
+├── adapters.py         # Detecção de formato e mapeamento para o modelo canônico
+├── pipeline_v2.py      # Consolidação de múltiplos arquivos e deduplicação global
+├── blip.py             # Exportação para o Blip e classificação por DDD
+├── cursos.py           # Padronização de curso e nomes de pasta seguros
+├── unificar.py         # Unificação de múltiplas listas de telefones
+├── tutorial.py         # Tutorial integrado e persistência de preferências
+├── test_*.py           # Suíte de testes automatizados (238 testes)
+├── test/               # Teste de desempenho e material de demonstração
+├── assets/             # Recursos visuais da interface
+├── requirements.txt    # Dependências de execução
+└── Conversor_CRM.spec  # Configuração de empacotamento (PyInstaller)
+```
+
+Papel dos principais módulos:
+
+- **`app.py`** — a interface gráfica e a orquestração do fluxo para o usuário.
+- **`processamento.py`** — as regras centrais de tratamento, herdadas da V1 e reutilizadas pelas versões seguintes.
+- **`adapters.py`** — concentra as diferenças entre formatos de origem, convertendo cada planilha para um modelo interno comum.
+- **`pipeline_v2.py`** — junta vários arquivos em um único conjunto e aplica a deduplicação global.
+- **`blip.py`** — prepara os contatos para o Blip e os classifica por DDD.
+- **`cursos.py`** e **`unificar.py`** — segmentação por curso e unificação de listas.
+
+---
+
+## Como executar
+
+Requer **Python 3.x**.
+
+```bash
+# 1. Clonar o repositório
+git clone https://github.com/MDCarvalho-77/Conversor_Planilha.git
+cd Conversor_Planilha
+
+# 2. Criar e ativar um ambiente virtual
+python -m venv .venv
+# Windows (PowerShell):
+.\.venv\Scripts\Activate.ps1
+# Linux/macOS:
+source .venv/bin/activate
+
+# 3. Instalar as dependências
+pip install -r requirements.txt
+
+# 4. Executar a aplicação
+python app.py
+
+# 5. Executar os testes
+python -m unittest -v
+```
+
+No Windows, se a política do PowerShell impedir a ativação do ambiente, execute o interpretador do ambiente virtual diretamente:
 
 ```powershell
 .\.venv\Scripts\python.exe app.py
 ```
 
-## Testes
+---
 
-Os testes funcionais atuais validam a saída completa, a saída somente de telefones, a geração das duas saídas, a igualdade dos telefones entre elas e as métricas da planilha de cenários.
+## Segurança e dados
 
-- Testes funcionais: **3 aprovados**.
-- Teste de carga com dados sintéticos e arquivos temporários:
-  - 5.000 registros: **1,23 s**.
-  - 10.000 registros: **2,35 s**.
-  - 25.000 registros: **5,83 s**.
+O repositório público **não contém dados reais de CRM**. O `.gitignore` bloqueia exports reais e as planilhas de saída geradas pelo processamento; apenas planilhas de teste controladas são mantidas. Os testes usam dados sintéticos criados em arquivos temporários durante a execução.
 
-Esses tempos são referências obtidas em ambiente de desenvolvimento com dados sintéticos; não representam garantia universal de desempenho.
+---
 
-Comandos utilizados:
+## Status
 
-```powershell
-python -m unittest -v
-python test\test_desempenho.py
-```
+Projeto **funcional**, em evolução incremental. Versão atual: **V3.3**, com todas as versões concluídas e 238 testes passando. O empacotamento Windows está configurado em `Conversor_CRM.spec`; o executável ainda não foi gerado.
 
-## Distribuição
+---
 
-O objetivo de distribuição é gerar um executável Windows independente chamado `Conversor_CRM.exe` com PyInstaller. A configuração `Conversor_CRM.spec` já está preparada, incluindo a logomarca em `assets/`, mas o build ainda está em preparação e o executável ainda não foi gerado.
+## Autor
 
-## Manutenção e expansão futura
+**Maykon Carvalho** — em transição de carreira da área comercial/operacional para tecnologia, com foco em automação de processos, tratamento de dados e desenvolvimento em Python.
 
-Novas regras de negócio devem ser implementadas em `processamento.py`. Alterações de interface, textos, layout e interação devem ser feitas em `app.py`.
+Este projeto nasceu de uma necessidade operacional real e evoluiu para uma aplicação Python testada, com foco em tratamento e preparação de dados e em usabilidade para pessoas não técnicas.
 
-Cuidados importantes:
-
-- Não alterar regras de deduplicação sem revisar e atualizar os testes.
-- Não alterar o tratamento de telefone sem atualizar os testes.
-- Preservar a compatibilidade com a estrutura exportada pelo CRM.
-- Atualizar este README quando uma regra de negócio mudar.
-
-## Múltiplos formatos e múltiplos arquivos (V2)
-
-A partir da V2, o aplicativo aceita vários arquivos por execução e mais de um
-formato de origem, mantendo intactas as regras e as saídas da versão anterior.
-
-### Seleção de arquivos
-
-- É possível selecionar **até 7 arquivos** Excel em uma única execução.
-- Se mais de 7 forem selecionados, o aplicativo avisa e não processa, para que
-  a seleção seja corrigida.
-- Formatos diferentes podem ser combinados na mesma execução (por exemplo, dois
-  arquivos do CRM 1, um do CRM 2 e uma planilha genérica).
-
-### Formatos de origem reconhecidos
-
-Cada arquivo é identificado individualmente pelos cabeçalhos de suas abas
-visíveis (abas `hidden`/`veryHidden` continuam ignoradas), na ordem:
-
-1. **CRM 1** — formato da V1 (assinatura: `CPF_CNPJ` + `Telefone da Empresa/Celular`).
-2. **CRM 2** — segundo formato de CRM. Telefone escolhido por prioridade
-   (`Telefone Celular` → `Telefone da Empresa` → `Telefone Residencial`); o
-   nome usa `Nome Completo` e, quando vazio, compõe `Nome` + `Segundo Nome` +
-   `Sobrenome`; o documento vem de `CPF`; o e-mail de `E-mail Comercial`.
-3. **Planilha genérica** — qualquer planilha que tenha uma coluna reconhecível
-   como telefone (a comparação olha apenas o **nome** da coluna, tolerando
-   maiúsculas/minúsculas, acentos e espaços). Nomes aceitos incluem `Telefone`,
-   `Celular`, `Telefone Celular`, `Telefone Residencial`, `Telefone da Empresa`,
-   `WhatsApp`, entre outros. Os demais campos (`Nome`, `CPF`, `E-mail`) são
-   aproveitados quando existirem e ficam vazios quando não houver.
-
-Se um arquivo não corresponder a nenhum desses formatos por não ter coluna de
-telefone reconhecível, o aplicativo mostra uma mensagem clara explicando o que
-precisa ser ajustado, sem interromper com erro técnico.
-
-### Modelo canônico e consolidação
-
-Cada arquivo é convertido para um modelo interno comum com os campos: Razão do
-Status, Nome Completo, CPF, E-mail, Telefone, Regional/Unidade do Produto, Nome
-do Produto e Produto Primário. Todos os arquivos são então **consolidados** em
-um único conjunto, sobre o qual ocorrem: remoção de registros sem telefone,
-**deduplicação global** e normalização de telefones (a mesma regra da V1).
-
-> A deduplicação global compara os campos do modelo canônico. Isso vale dentro
-> do mesmo arquivo e entre arquivos e formatos diferentes. Essa regra aplica-se
-> **apenas** a este fluxo (V2). O fluxo clássico da V1 — um único arquivo do
-> CRM 1 com as três saídas originais — permanece inalterado, com deduplicação
-> integral das linhas.
-
-### Nova saída: Planilha completa estendida
-
-Além das três saídas existentes, há a opção **Planilha completa estendida**,
-que gera `<nome>_estendido.xlsx` com sete colunas:
-
-1. `Razão do Status`
-2. `Nome Completo`
-3. `CPF`
-4. `E-mail`
-5. `Telefone da Empresa/Celular`
-6. `Regional/Unidade do Produto`
-7. `Nome do Produto`
-
-Campos ausentes na origem (por exemplo, `Regional/Unidade do Produto` em
-arquivos do CRM 1) ficam vazios. Todas as saídas partem do mesmo conjunto final;
-não há segunda deduplicação por saída.
-
-### Nomes dos arquivos de saída
-
-- Um único arquivo de entrada: a saída usa o nome do próprio arquivo (igual à V1).
-- Vários arquivos: a saída recebe o prefixo `Consolidado_` sobre o nome do
-  primeiro arquivo e é gravada na pasta dele.
-
-### Ícone do aplicativo
-
-O executável passa a ter um ícone próprio, gerado a partir da logomarca
-(`assets/conversor_crm.ico`) e configurado no `Conversor_CRM.spec`. O script
-`gerar_icone.py` regenera o `.ico` a partir do PNG oficial quando necessário.
-
-### Arquitetura da V2
-
-- `adapters.py`: identificação de formato e mapeamento de cada origem para o
-  modelo canônico. Concentra as diferenças entre CRMs, evitando condicionais de
-  formato espalhadas pelo código de negócio.
-- `pipeline_v2.py`: consolidação de múltiplos arquivos, deduplicação global e
-  geração das saídas (inclusive a estendida). Reutiliza as funções da V1 para
-  leitura de abas visíveis, limpeza de nomes de coluna e normalização de
-  telefone.
-
-Os testes da V2 (`test_adapters.py`, `test_consolidacao.py`) cobrem detecção de
-formato, mapeamento de cada CRM, prioridade e fallback do CRM 2, reconhecimento
-genérico de telefone, erro amigável sem telefone, consolidação e deduplicação
-global entre arquivos e formatos, e a saída estendida. Os testes da V1
-permanecem como referência de regressão e não devem ser removidos.
-
-## Exportação para o Blip (V3)
-
-A V3 adiciona a modalidade **"Blip — lista de contatos"**, que prepara arquivos
-CSV prontos para upload no Blip, com um Excel intermediário para conferência e
-edição manual. Os fluxos e as saídas anteriores permanecem inalterados.
-
-### Requisitos do CSV do Blip
-
-Cada CSV gerado respeita:
-
-- Exatamente duas colunas, nesta ordem: `Número ou BSUID` e `Nome`.
-- Uma linha por contato, sem índice do pandas nem colunas extras.
-- No máximo **100 contatos** por arquivo (sem contar o cabeçalho).
-- No máximo **100 KB** de tamanho real do arquivo gravado.
-- Identificador no formato de telefone internacional com `+` (ex.: `+5548999990001`)
-  ou um BSUID válido (aceito na reimportação, quando o usuário fornecer).
-- Codificação **UTF-8** (sem BOM) e separador vírgula, preservando acentos,
-  vírgulas, aspas e o `+` inicial.
-
-Os arquivos são nomeados sequencialmente: `Blip_001.csv`, `Blip_002.csv`, etc.
-Cada CSV é revalidado após a gravação, medindo os bytes reais e reabrindo o
-conteúdo. Nenhum arquivo existente é sobrescrito silenciosamente: se a pasta de
-saída já contiver `Blip_*.csv`, o aplicativo avisa.
-
-### Fluxo em duas etapas
-
-1. **Preparação.** Selecione as planilhas (CRM 1, CRM 2 ou genéricas, até 7),
-   escolha a saída "Blip — lista de contatos" e clique em processar. O
-   aplicativo reaproveita a consolidação, a deduplicação global e a
-   normalização de telefones da V2, mapeia o resultado para as duas colunas do
-   Blip, divide em lotes (respeitando 100 contatos **e** 100 KB) e gera:
-   - os CSVs iniciais (`Blip_001.csv`...);
-   - um Excel de conferência `Blip_Contatos_Revisao.xlsx`, com uma aba por lote
-     (`Lote_001`, `Lote_002`...), telefones como texto (preservando o `+` e sem
-     notação científica), cabeçalho e autofiltro.
-
-2. **Geração final após a revisão.** Edite o Excel livremente (inserir, remover,
-   mover ou corrigir contatos) e use **"Gerar CSVs a partir da planilha
-   revisada"**. O aplicativo lê as abas, valida as duas colunas e os
-   identificadores, **reaplica os limites de 100 contatos e 100 KB** —
-   redistribuindo automaticamente mesmo que uma aba tenha passado de 100
-   contatos — e grava os CSVs definitivos na pasta escolhida. O Excel revisado
-   não é modificado.
-
-### Regras de validação
-
-- O identificador (telefone) é obrigatório. Registros sem identificador válido
-  não são descartados em silêncio: aparecem no resumo como inválidos.
-- O nome pode faltar; nesse caso o contato é mantido com nome vazio (o
-  aplicativo não inventa nomes) e é contabilizado no resumo.
-- Se um único contato não couber em 100 KB nem sozinho, ele não é truncado: é
-  reportado como inválido.
-
-O resumo apresentado ao final informa contatos exportados, número de arquivos
-gerados e eventuais registros inválidos. O processamento roda fora da thread da
-interface e cliques repetidos não iniciam execuções simultâneas.
-
-## Separação automática por DDD (V3.1)
-
-A V3.1 é uma evolução incremental (não é uma V4): tudo o que já funcionava na
-V1, V2 e V3 permanece intacto. O foco é atender à operação comercial, que
-trabalha com três números de WhatsApp associados aos DDDs **47**, **48** e
-**49**. Após a consolidação e a deduplicação global, os contatos preparados para
-o Blip são classificados automaticamente em **quatro grupos**.
-
-### Os quatro grupos
-
-1. **DDD_47** — somente contatos cujo telefone brasileiro tenha DDD 47.
-2. **DDD_49** — somente contatos cujo telefone brasileiro tenha DDD 49.
-3. **DDD_48_E_OUTROS** — contatos com DDD 48 e todos os demais DDDs brasileiros
-   válidos diferentes de 47 e 49.
-4. **SEM_DDD** — contatos que não podem ser classificados com segurança: BSUID,
-   telefones internacionais que não sejam brasileiros e telefones sem DDD
-   brasileiro identificável.
-
-Cada contato cai em **exatamente um** grupo, e nenhum contato é descartado.
-
-### Regra conservadora de classificação
-
-A classificação usa o telefone **já normalizado** pela lógica existente (a mesma
-regra de telefone da V1/V2) e não inventa nem infere DDD por nome, origem da
-planilha ou qualquer outro campo:
-
-- Um telefone é reconhecido como brasileiro somente quando os dígitos começam
-  com `55` **e** o total é de **12 dígitos** (`55` + DDD de 2 + número de 8) ou
-  **13 dígitos** (`55` + DDD de 2 + número de 9). O DDD são os dois dígitos logo
-  após o `55`, válido na faixa 11–99.
-- Qualquer outra forma vai para **SEM_DDD**: BSUID e identificadores com letras,
-  telefones internacionais não brasileiros (ex.: `+1...`, `+351...`, `+44...`) e
-  `+55` com comprimento incompatível (que não permita inferir o DDD com
-  segurança).
-- Os dois primeiros dígitos de um telefone internacional **não** são confundidos
-  com DDD brasileiro.
-
-### Estrutura de pastas Blip/DDD_x/
-
-A exportação Blip da V3.1 organiza os arquivos por grupo dentro de uma pasta
-`Blip/`:
-
-```text
-Blip/
-    DDD_47/
-        Blip_001.csv
-        Blip_Contatos_Revisao.xlsx
-    DDD_49/
-        Blip_001.csv
-        Blip_Contatos_Revisao.xlsx
-    DDD_48_E_OUTROS/
-        Blip_001.csv
-        Blip_Contatos_Revisao.xlsx
-    SEM_DDD/
-        Blip_001.csv
-        Blip_Contatos_Revisao.xlsx
-```
-
-Regras da estrutura:
-
-- A subpasta de um grupo é criada **somente** quando o grupo tem contatos; um
-  grupo vazio não gera pasta.
-- A numeração dos CSVs é **independente por grupo**: cada grupo recomeça em
-  `Blip_001.csv` e segue sequencialmente (`Blip_002.csv`...) quando há mais de um
-  lote.
-- Cada grupo tem a sua **própria** planilha de revisão `Blip_Contatos_Revisao.xlsx`;
-  contatos de grupos diferentes nunca se misturam no mesmo CSV nem na mesma
-  planilha.
-- Os limites e o formato dos CSVs do Blip são preservados (duas colunas na ordem
-  `Número ou BSUID` e `Nome`, máximo de 100 contatos e 100 KB reais por arquivo,
-  UTF-8 sem BOM, separador vírgula, `+` preservado) e nenhum `Blip_*.csv`
-  existente é sobrescrito silenciosamente.
-
-### Duas opções de saída na interface
-
-A interface passa a oferecer **somente duas** opções de saída:
-
-- **Opção A — Planilha completa + números convertidos.** Gera a planilha
-  completa consolidada (`<nome>_tratado.xlsx`) e a lista de telefones convertidos
-  (`<nome>_telefones.xlsx`). Corresponde exatamente ao comportamento das "duas
-  saídas" já existente, sem mudança de campos, colunas, formatação ou regras.
-- **Opção B — Blip — listas de contatos (separadas por DDD).** Opção principal da
-  operação comercial: prepara os contatos, separa automaticamente nos quatro
-  grupos e gera, para cada grupo com contatos, os CSVs e a planilha de revisão na
-  estrutura `Blip/DDD_x/`.
-
-As opções intermediárias ou redundantes deixaram de aparecer na interface. As
-funções e constantes internas que ainda sustentam compatibilidade e testes
-foram preservadas — a simplificação é da **experiência de uso**, não da base de
-código.
-
-### Reimportação de revisão com reclassificação por DDD
-
-Ao gerar os CSVs finais a partir das planilhas revisadas, o usuário pode
-selecionar **múltiplos** arquivos de revisão (um por grupo). O sistema não confia
-cegamente na pasta ou na aba de origem: cada contato é **reclassificado pelo
-telefone atual** com a mesma regra conservadora de DDD. Assim:
-
-- Se o telefone foi alterado e mudou de DDD, o contato é encaminhado ao grupo
-  correto.
-- Se o telefone deixou de ser identificável com segurança, o contato vai para
-  SEM_DDD.
-- Os contatos são reagrupados e os limites de 100 contatos e 100 KB são
-  reaplicados por grupo.
-
-O resumo da operação informa quantos **contatos mudaram de grupo** após a revisão
-(considerando a origem conhecida pela pasta-pai do arquivo). As planilhas de
-revisão **originais não são modificadas**.
-
-### Feedback de sucesso
-
-Na preparação Blip, o resumo informa o total de contatos processados, a
-quantidade em cada grupo, os CSVs gerados por grupo, a quantidade sem DDD
-identificável e a localização da pasta raiz `Blip/`. Na geração dos CSVs
-revisados, o resumo informa o total exportado, quantos contatos mudaram de grupo,
-os CSVs por grupo, a quantidade em SEM_DDD e a localização. Nenhum sucesso é
-exibido antes de concluir a gravação de todos os arquivos; em caso de erro,
-nenhuma mensagem de sucesso é mostrada.
-
-## Separação por curso e DDD (V3.2)
-
-A V3.2 acrescenta uma **terceira** modalidade de saída, sem alterar nenhuma das
-duas anteriores: **"Blip - listas de contatos separadas por curso e DDD"**. Ela
-primeiro separa os contatos por **curso** e, dentro de cada curso, pelos mesmos
-quatro grupos de DDD da V3.1 (DDD_47, DDD_49, DDD_48_E_OUTROS e SEM_DDD).
-
-### Coluna de curso obrigatória (somente nesta modalidade)
-
-A obrigatoriedade da coluna de curso vale **exclusivamente** para esta terceira
-opção. As opções A (planilha completa + números) e B (Blip por DDD) continuam
-funcionando sem exigir curso. Antes de gerar qualquer arquivo, todas as
-planilhas selecionadas são validadas: se **alguma** não tiver uma coluna de
-curso reconhecível ou houver **ambiguidade**, o processamento é interrompido com
-uma única mensagem que lista todas as planilhas problemáticas — e **nenhum**
-arquivo parcial é gravado.
-
-### Rótulos de curso reconhecidos e ordem de prioridade
-
-A coluna de curso é identificada pelo **nome** do cabeçalho (tolerante a
-maiúsculas/minúsculas, acentos e espaços), nunca pelo conteúdo das células. Os
-rótulos conhecidos são avaliados nesta ordem de prioridade — primeiro os rótulos
-explícitos de curso/interesse, depois os de produto:
-
-1. `Curso`
-2. `Nome do Curso`
-3. `Tipo de Curso`
-4. `Curso de Interesse`
-5. `Interesse` / `Formação de Interesse` / `Graduação de Interesse` / `Área de Interesse`
-6. `Nome do Produto`
-7. `Produto Primário`
-8. `Produto Principal`
-9. `Primário (Nome do produto) (Produto)`
-10. `Produto`
-11. `Produto de Interesse` / `Interesse em Produto`
-
-Quando mais de um rótulo **de produto** conhecido está presente, a prioridade
-acima resolve qual usar — isso **não** é ambiguidade. A ambiguidade que
-interrompe ocorre apenas quando há duas ou mais categorias claramente distintas
-de curso/interesse presentes como colunas separadas (por exemplo, `Curso` **e**
-`Curso de Interesse`). Nesse caso a mensagem lista as colunas candidatas
-encontradas.
-
-### Tabela de equivalências e `CURSO_NAO_IDENTIFICADO`
-
-Os nomes de curso passam por uma tabela de equivalências **cadastrada
-manualmente** em `cursos.py` (`EQUIVALENCIAS_CURSO`). A semente inicial unifica
-as três variações de Análise e Desenvolvimento de Sistemas em uma única
-denominação padrão. Nenhuma similaridade é inferida automaticamente: cursos sem
-equivalência cadastrada **preservam o nome original**. Para **estender**,
-acrescente um par `normalizar_rotulo("Nome Variante"): "Denominação Padrão"` ao
-dicionário — nenhuma equivalência adicional é cadastrada sem confirmação.
-
-Um contato cuja célula de curso esteja **vazia** (mesmo com a coluna presente)
-não interrompe o processamento: ele é classificado como
-`CURSO_NAO_IDENTIFICADO`, que também é subdividido pelos quatro grupos de DDD.
-
-### Estrutura de pastas Blip/<Curso>/<DDD>/
-
-```text
-Blip/
-    Analise e Desenvolvimento de Sistemas/
-        DDD_47/
-            Blip_001.csv
-            Blip_Contatos_Revisao.xlsx
-        DDD_49/
-            Blip_001.csv
-            Blip_Contatos_Revisao.xlsx
-    CURSO_NAO_IDENTIFICADO/
-        SEM_DDD/
-            Blip_001.csv
-            Blip_Contatos_Revisao.xlsx
-```
-
-O nome da pasta de cada curso é sanitizado para o Windows e colisões entre
-nomes diferentes são desambiguadas de forma determinística. Uma combinação
-curso+DDD só gera pasta quando tem contatos; a numeração dos CSVs reinicia em
-`Blip_001.csv` por combinação.
-
-### Formato dos CSVs e da planilha de revisão
-
-- Os **CSVs** continuam com **exatamente duas colunas** (`Número ou BSUID` e
-  `Nome`), respeitando os mesmos limites (100 contatos e 100 KB reais por
-  arquivo, UTF-8 sem BOM, separador vírgula, `+` preservado). E-mail e curso
-  **não** entram no CSV oficial do Blip.
-- A **planilha de revisão** da V3.2 (`Blip_Contatos_Revisao.xlsx`) tem **quatro
-  colunas**: `Número ou BSUID`, `Nome`, `E-mail` e `Curso`. A coluna de telefone
-  é texto (preservando o `+`) e há autofiltro. E-mail e curso ficam na revisão
-  para conferência manual, mas não são exportados para o CSV.
-
-### Reimportação com autodetecção (2 vs 4 colunas)
-
-O botão **"Gerar CSVs a partir da planilha revisada"** é **único** e detecta o
-formato automaticamente pelos **cabeçalhos** das abas visíveis (não apenas pela
-quantidade de colunas):
-
-- `Número ou BSUID, Nome` → revisão antiga (V3.1), reclassificada apenas por DDD.
-- `Número ou BSUID, Nome, E-mail, Curso` → revisão nova (V3.2), reclassificada
-  por curso **e** DDD.
-
-As revisões antigas de duas colunas continuam funcionando normalmente. Em cada
-reimportação v3.2, o curso é repadronizado (curso apagado →
-`CURSO_NAO_IDENTIFICADO`) e o DDD é reclassificado pelo telefone atual (telefone
-alterado muda a pasta de DDD; inidentificável → `SEM_DDD`). Os arquivos de
-revisão originais **não são modificados**. O resumo informa, além dos totais por
-curso e por DDD, quantos contatos mudaram de curso, mudaram de DDD, foram para
-`CURSO_NAO_IDENTIFICADO` e foram para `SEM_DDD`.
-
-## Unificação de telefones (V3.3)
-
-A V3.3 acrescenta uma **quarta** modalidade de saída — **"Unificar lista -
-Somente telefones"** — sem alterar nenhuma das três anteriores. Ela reúne os
-telefones de várias listas em uma única lista deduplicada, classificada pelos
-mesmos quatro grupos de DDD das versões anteriores.
-
-### Entradas aceitas e a diferença no limite de 7
-
-- A modalidade aceita arquivos **CSV** e **Excel** (`.xlsx`).
-- **Esta modalidade NÃO tem o limite de 7 arquivos.** É possível selecionar
-  quantos arquivos forem necessários em uma única execução.
-- As demais modalidades (planilha completa + números, Blip por DDD e Blip por
-  curso e DDD) **mantêm o limite de até 7 arquivos** já existente. A diferença
-  é deliberada e fica explícita na interface.
-
-### Leitura de CSV
-
-A leitura de CSV tenta, em ordem, os encodings **`utf-8-sig`**, **`utf-8`** e
-**`latin-1`**, e detecta automaticamente o separador do arquivo. O objetivo é
-abrir listas exportadas por ferramentas diferentes sem exigir ajuste manual.
-
-### Reconhecimento da coluna de telefone
-
-A coluna de telefone é identificada por uma **lista controlada de rótulos**,
-comparando apenas o **nome** do cabeçalho (tolerante a maiúsculas/minúsculas,
-acentos e espaços), nunca pelo conteúdo das células. A lista reutiliza os mesmos
-rótulos genéricos de telefone já reconhecidos nas versões anteriores.
-
-### Validação prévia por arquivo (sem saída parcial)
-
-Antes de gerar qualquer arquivo, **todos** os arquivos selecionados são
-validados. Se **algum** não tiver coluna de telefone reconhecível ou houver
-**ambiguidade**, o processamento é interrompido com uma única mensagem que lista
-todos os arquivos problemáticos — e **nenhum** arquivo parcial é gravado.
-
-### Consolidação, dedup global e classificação por DDD
-
-Os telefones de todas as listas são reunidos, **deduplicados globalmente** (dedup
-entre arquivos e dentro do mesmo arquivo) e classificados nos **quatro grupos de
-DDD** (DDD_47, DDD_49, DDD_48_E_OUTROS e SEM_DDD), com a mesma regra conservadora
-das versões anteriores (reutilizando a normalização de telefone e a classificação
-por DDD já existentes).
-
-### Relatório de inválidos (nunca descarte silencioso)
-
-Telefones inválidos ou não classificáveis **não são descartados em silêncio**. O
-resumo apresenta a **quantidade** de registros inválidos/não classificáveis e,
-sempre que possível, **identifica os registros envolvidos** para conferência.
-
-### Saída `LISTA_UNIFICADA/`
-
-A saída é gravada na estrutura `LISTA_UNIFICADA/<GRUPO_DDD>/Lista_Unificada.{xlsx,csv}`:
-
-```text
-LISTA_UNIFICADA/
-    DDD_47/
-        Lista_Unificada.xlsx
-        Lista_Unificada.csv
-    DDD_49/
-        Lista_Unificada.xlsx
-        Lista_Unificada.csv
-    DDD_48_E_OUTROS/
-        Lista_Unificada.xlsx
-        Lista_Unificada.csv
-    SEM_DDD/
-        Lista_Unificada.xlsx
-        Lista_Unificada.csv
-```
-
-Características da saída:
-
-- Cada arquivo tem **uma única coluna** `Telefone`.
-- O `+` inicial do identificador é **preservado**.
-- No Excel, o telefone é gravado **como texto** (sem notação científica).
-- O CSV é gravado em **UTF-8 sem BOM**, separador vírgula.
-- **Não** se aplicam os limites de 100 contatos / 100 KB do Blip: a lista
-  unificada não é fatiada em lotes.
-- Uma subpasta de grupo é criada **somente** quando o grupo tem contatos.
-
-### Anti-sobrescrita com autorização explícita
-
-Nenhum arquivo existente é sobrescrito silenciosamente. Se a saída já existir, o
-aplicativo exibe um **aviso** e permite **escolher outro destino** ou **autorizar
-explicitamente a substituição** antes de gravar.
-
-## Ajuda / Tutorial (V3.3)
-
-A V3.3 adiciona um tutorial de uso acessível diretamente pela interface:
-
-- Um botão **"Ajuda / Tutorial"** fica no **cabeçalho** da interface (não há barra
-  de menu nativa).
-- O tutorial é exibido automaticamente no **primeiro acesso**.
-- Há a opção **"Não mostrar novamente"** e a possibilidade de **reabertura manual**
-  a qualquer momento pelo botão do cabeçalho.
-- A preferência é salva em **`%APPDATA%\ConversorCRM\config.json`**. A gravação e
-  a leitura são **à prova de falhas**: quando `%APPDATA%` não existe, há fallback
-  para o diretório do usuário e nenhuma exceção de entrada/saída é propagada para
-  a interface.
-
-## Histórico de versões
-
-- **V1 — concluída:** processamento inicial.
-- **V2 — concluída:** três formatos de saída.
-- **V3.1 — concluída:** robustez e processamento em background.
-- **V3.2 — concluída:** UX e identidade visual.
-- **V2 (multiformato) — concluída:** múltiplos arquivos (até 7), suporte a um
-  segundo CRM e a planilhas genéricas por telefone, consolidação com
-  deduplicação global, nova saída "Planilha completa estendida" e ícone próprio
-  do executável. O fluxo clássico da V1 permanece inalterado.
-- **V3 (Blip) — concluída:** modalidade "Blip — lista de contatos" com geração
-  de CSVs (até 100 contatos / 100 KB), Excel de conferência por lote e geração
-  dos CSVs definitivos a partir do Excel revisado. Fluxos V1/V2 inalterados.
-- **V3.1 (separação por DDD) — concluída:** classificação automática dos
-  contatos Blip em quatro grupos (DDD_47, DDD_49, DDD_48_E_OUTROS e SEM_DDD) com
-  regra conservadora de identificação do DDD, exportação na estrutura
-  `Blip/DDD_x/` (subpasta e numeração independentes por grupo, um Excel de
-  revisão por grupo), simplificação da interface para duas opções de saída
-  (A: planilha completa + números convertidos; B: Blip separado por DDD) e
-  reimportação de múltiplas planilhas de revisão com reclassificação pelo
-  telefone atual e contador de contatos que mudaram de grupo. Os originais de
-  revisão não são modificados e os fluxos V1/V2/V3 permanecem inalterados.
-- **V3.2 (separação por curso e DDD) — concluída:** terceira modalidade de saída
-  "Blip - listas de contatos separadas por curso e DDD", que separa por curso e,
-  dentro de cada curso, pelos quatro grupos de DDD. Coluna de curso **obrigatória
-  apenas nesta modalidade**, com validação prévia que interrompe sem gerar
-  parciais em caso de ausência ou ambiguidade. Reconhecimento tolerante da coluna
-  de curso por ordem de prioridade (curso/interesse antes de produto), tabela de
-  equivalências cadastrada manualmente (semente ADS, extensível) com preservação
-  do nome original quando não há equivalência, marcador `CURSO_NAO_IDENTIFICADO`,
-  estrutura `Blip/<Curso>/<DDD>/`, CSV mantido em duas colunas e planilha de
-  revisão de quatro colunas (`Número ou BSUID`, `Nome`, `E-mail`, `Curso`). O
-  botão de reimportação é único e autodetecta revisões de 2 colunas (V3.1) e de
-  4 colunas (V3.2) pelos cabeçalhos. As duas modalidades anteriores e os fluxos
-  V1/V2/V3/V3.1 permanecem inalterados.
-- **V3.3 (unificação de telefones + tutorial) — concluída:** quarta modalidade
-  de saída "Unificar lista - Somente telefones", que aceita CSV e Excel, **sem o
-  limite de 7 arquivos** (mantido nas demais modalidades), lê CSV com os
-  encodings `utf-8-sig`/`utf-8`/`latin-1` e detecção de separador, reconhece a
-  coluna de telefone por lista controlada de rótulos (apenas pelo nome), valida
-  previamente cada arquivo interrompendo sem gerar parciais em caso de ausência
-  ou ambiguidade, consolida com deduplicação global e classifica nos quatro
-  grupos de DDD. Telefones inválidos/não classificáveis são reportados com
-  identificação, nunca descartados em silêncio. A saída
-  `LISTA_UNIFICADA/<GRUPO_DDD>/Lista_Unificada.{xlsx,csv}` tem uma única coluna
-  `Telefone`, `+` preservado, Excel como texto e CSV UTF-8 sem BOM, sem os
-  limites de 100 contatos/100 KB, com anti-sobrescrita por autorização explícita.
-  Inclui o botão "Ajuda / Tutorial" no cabeçalho, com exibição no primeiro
-  acesso, opção "Não mostrar novamente" e reabertura manual, salvando a
-  preferência em `%APPDATA%\ConversorCRM\config.json` à prova de falhas. As três
-  modalidades anteriores e os fluxos V1/V2/V3/V3.1/V3.2 permanecem inalterados.
+- GitHub: [MDCarvalho-77](https://github.com/MDCarvalho-77)
+- LinkedIn: [Maykon Douglas da Silva Carvalho](https://www.linkedin.com/in/maykon-douglas-da-silva-carvalho-2aa271239)
